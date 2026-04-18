@@ -61,8 +61,20 @@ backend/realtime-gateway
   - Returns current meeting state with transition history.
 - `GET /meetings`
   - Returns all meeting records.
+- `GET /meetings/:meetingId/admission/candidate?participantId=…`
+  - Returns current admission slot state (`owner`, `pending`, `ownerActive`, `canCurrentParticipantRejoin`).
+- `POST /meetings/:meetingId/admission/candidate/acquire`
+  - Body `{ participantId, displayName? }`. Returns `200` if granted, `423` if waiting for HR approval.
+- `POST /meetings/:meetingId/admission/candidate/release`
+  - Body `{ participantId, reason? }`. Frees the slot; first pending entry is auto-promoted to owner.
+- `POST /meetings/:meetingId/admission/candidate/decision`
+  - Body `{ participantId, action: "approve" | "deny", decidedBy? }`. HR override.
 - `GET /ops/webhooks`
   - Returns in-memory webhook queue stats.
+- `GET /health/ready`
+  - Readiness probe: checks Redis (when enabled) and OpenAI key. Returns `503` if degraded.
+- `GET /metrics`
+  - Prometheus exposition (when `METRICS_ENABLED=true`, default).
 
 ## Session Lifecycle
 
@@ -241,10 +253,45 @@ Run:
 docker run --rm -p 8080:8080 --env-file .env realtime-webrtc-gateway
 ```
 
+## Storage Backends
+
+By default sessions, meetings, and interview projections live in memory (lost on restart). To enable Redis persistence:
+
+```
+STORAGE_BACKEND=redis
+REDIS_URL=redis://127.0.0.1:6379/0
+# optional:
+REDIS_PREFIX=nullxes:hr-ai
+REDIS_SESSION_TTL_MS=86400000
+REDIS_RECONNECT_MAX_DELAY_MS=30000
+REDIS_HEARTBEAT_MS=15000
+```
+
+Per-key writes (`<prefix>:session:<id>`, `<prefix>:meeting:<id>`, `<prefix>:interview:<jobAiId>`) and on-startup `SCAN` for hydration. Legacy blob keys (`<prefix>:sessions`, `<prefix>:meetings`, `<prefix>:interviews`) are migrated to per-key on first start and then deleted (idempotent).
+
+The Redis client (`src/services/redisClient.ts`) is a minimal RESP implementation on `node:net` with auto-reconnect (200ms→30s + jitter), heartbeat PING (15s), and a bounded command queue (default 100). No external Redis driver dependency.
+
+## Observability
+
+- `/metrics` exposes Prometheus metrics (`gateway_http_requests_total`, `gateway_http_request_duration_seconds`, `gateway_realtime_sessions_active`, `gateway_webhook_outbox_pending`, `gateway_webhook_outbox_failed`, `gateway_redis_reconnects_total`, plus default node metrics).
+- `/health/ready` checks Redis connectivity (when enabled) and OpenAI key presence.
+
+## Rate limiting and CORS
+
+In-memory `express-rate-limit` (per IP, `trust proxy = 1` so X-Forwarded-For is honored):
+
+- `POST /realtime/session` — 30 / min
+- `GET  /realtime/token`  — 60 / min
+- `POST /meetings/:id/admission/candidate/*` — 60 / min
+- `POST /jobai/*` and `POST /webhooks/jobai*` — 120 / min
+
+Configure with `RATE_LIMIT_ENABLED=false` to disable. CORS allowlist via `CORS_ALLOWED_ORIGINS` (comma-separated).
+
+## Upgrading from v1 (memory-only) to v2 (admission + redis + tier1/2/3)
+
+See [`UPGRADE-NOTES.md`](./UPGRADE-NOTES.md) for the deploy playbook and rollback procedure.
+
 ## Horizontal Scaling Notes
 
-- Current store is in-memory and suitable for single-instance deployments.
-- For multi-instance:
-  - Implement Redis/PostgreSQL-backed adapters for session, meeting state, outbox, and idempotency.
-  - Ensure meeting/event state is shared across replicas.
-  - Use load-balancer stickiness if required by signaling/event patterns.
+- With `STORAGE_BACKEND=redis` the session, meeting, and interview projection state survive restart and can be read by multiple replicas (per-key reads/writes; webhook outbox is still in-memory per replica).
+- Use load-balancer stickiness if required by signaling/event patterns.

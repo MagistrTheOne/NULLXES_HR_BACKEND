@@ -2,13 +2,23 @@ import { logger } from "../logging/logger";
 import type { DataChannelEventPayload, SessionRecord, SessionStatus } from "../types/realtime";
 
 export class InMemorySessionStore {
-  private readonly sessions = new Map<string, SessionRecord>();
+  protected readonly sessions = new Map<string, SessionRecord>();
   private sweepTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly idleTimeoutMs: number,
     private readonly sweepIntervalMs: number
   ) {}
+
+  /** Гидратирует запись из persistent storage без создания новой (используется persisted-обёртками). */
+  hydrate(record: SessionRecord): void {
+    this.sessions.set(record.id, record);
+  }
+
+  /** Удаляет запись только из in-memory карты (persisted-обёртка отдельно чистит Redis). */
+  protected removeLocal(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
 
   startSweeper(): void {
     this.stopSweeper();

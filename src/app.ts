@@ -2,22 +2,30 @@ import express, { type Request, type Response } from "express";
 import pinoHttp from "pino-http";
 import { env } from "./config/env";
 import { logger } from "./logging/logger";
+import { createCorsMiddleware } from "./middleware/cors";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import { createReadinessHandler } from "./middleware/health";
+import { createMetricsContext } from "./middleware/metrics";
+import {
+  admissionLimiter,
+  jobaiIngestLimiter,
+  realtimeSessionLimiter,
+  realtimeTokenLimiter
+} from "./middleware/rateLimit";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { createInterviewsRouter } from "./routes/interviews.routes";
 import { createJobAiRouter } from "./routes/jobai.routes";
 import { createTzAliasRouter } from "./routes/tzAlias.routes";
 import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
-import { InMemoryInterviewStore } from "./services/interviewStore";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
-import { InMemoryMeetingStore } from "./services/meetingStore";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
 import { PostMeetingProcessor } from "./services/postMeetingProcessor";
-import { InMemorySessionStore } from "./services/sessionStore";
+import { createStorageBackends, type StorageBackends } from "./services/storageFactory";
+import type { InMemorySessionStore } from "./services/sessionStore";
 import { WebhookDispatcher } from "./services/webhookDispatcher";
 import { WebhookOutbox } from "./services/webhookOutbox";
 
@@ -26,19 +34,17 @@ export interface AppContext {
   sessionStore: InMemorySessionStore;
   webhookDispatcher: WebhookDispatcher;
   postMeetingProcessor: PostMeetingProcessor;
+  storage: StorageBackends;
 }
 
-export function createApp(): AppContext {
+export async function createApp(): Promise<AppContext> {
   const app = express();
-  const sessionStore = new InMemorySessionStore(
-    env.SESSION_IDLE_TIMEOUT_MS,
-    env.SESSION_SWEEP_INTERVAL_MS
-  );
+  const storage = await createStorageBackends();
+  const { sessionStore, interviewStore, meetingStore } = storage;
+
   const openAIClient = new OpenAIRealtimeClient();
   const jobAiClient = new JobAiClient();
-  const interviewStore = new InMemoryInterviewStore();
   const interviewService = new InterviewSyncService(jobAiClient, interviewStore);
-  const meetingStore = new InMemoryMeetingStore();
   const meetingStateMachine = new MeetingStateMachine();
   const webhookOutbox = new WebhookOutbox();
   const postMeetingProcessor = new PostMeetingProcessor(webhookOutbox);
@@ -50,7 +56,20 @@ export function createApp(): AppContext {
     postMeetingProcessor
   );
 
+  const metrics = env.METRICS_ENABLED
+    ? createMetricsContext({
+        sessionStore,
+        webhookOutbox,
+        redisReconnects: storage.redisReconnects
+      })
+    : undefined;
+
   app.disable("x-powered-by");
+  if (env.RATE_LIMIT_TRUST_PROXY) {
+    app.set("trust proxy", 1);
+  }
+
+  app.use(createCorsMiddleware());
   app.use(requestIdMiddleware);
   app.use(
     pinoHttp({
@@ -71,6 +90,10 @@ export function createApp(): AppContext {
     })
   );
 
+  if (metrics) {
+    app.use(metrics.middleware);
+  }
+
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req: Request, res: Response) => {
@@ -81,17 +104,67 @@ export function createApp(): AppContext {
     });
   });
 
+  app.get(
+    "/health/ready",
+    createReadinessHandler({
+      redis: storage.redis,
+      redisReconnects: storage.redisReconnects,
+      webhookOutbox,
+      hasOpenAIKey: Boolean(env.OPENAI_API_KEY)
+    })
+  );
+
+  if (metrics) {
+    app.get("/metrics", (req, res, next) => {
+      void metrics.handler(req, res).catch(next);
+    });
+  }
+
+  // ---------------- routers ----------------
   app.use(
     "/realtime",
+    (req, res, next) => {
+      // Применяем разные лимиты по подмаршрутам, не оборачивая весь роутер.
+      if (req.method === "POST" && req.path === "/session") {
+        return realtimeSessionLimiter(req, res, next);
+      }
+      if (req.method === "GET" && req.path === "/token") {
+        return realtimeTokenLimiter(req, res, next);
+      }
+      next();
+    },
     createRealtimeRouter({
       openAIClient,
       sessionStore
     })
   );
-  app.use("/meetings", createMeetingRouter(meetingOrchestrator));
+
+  app.use(
+    "/meetings",
+    (req, res, next) => {
+      if (req.method === "POST" && /^\/[^/]+\/admission\/candidate(\/|$)/.test(req.path)) {
+        return admissionLimiter(req, res, next);
+      }
+      next();
+    },
+    createMeetingRouter(meetingOrchestrator)
+  );
+
   app.use("/interviews", createInterviewsRouter(interviewService));
   app.use("/api/v1", createTzAliasRouter(interviewService, jobAiClient));
-  app.use("/", createJobAiRouter(interviewService));
+  app.use(
+    "/",
+    (req, res, next) => {
+      if (req.method === "POST" && req.path.startsWith("/jobai/")) {
+        return jobaiIngestLimiter(req, res, next);
+      }
+      if (req.method === "POST" && req.path.startsWith("/webhooks/jobai")) {
+        return jobaiIngestLimiter(req, res, next);
+      }
+      next();
+    },
+    createJobAiRouter(interviewService)
+  );
 
   app.get("/ops/webhooks", (_req: Request, res: Response) => {
     res.status(200).json({
@@ -102,5 +175,5 @@ export function createApp(): AppContext {
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  return { app, sessionStore, webhookDispatcher, postMeetingProcessor };
+  return { app, sessionStore, webhookDispatcher, postMeetingProcessor, storage };
 }

@@ -19,10 +19,22 @@ export function splitRuFullName(fullName: string): { candidateLastName: string; 
 }
 
 export class InMemoryInterviewStore {
-  private readonly byJobAiId = new Map<number, StoredInterview>();
-  private lastSyncAt: string | null = null;
-  private lastSyncResult: "idle" | "success" | "error" = "idle";
-  private lastSyncError: string | null = null;
+  protected readonly byJobAiId = new Map<number, StoredInterview>();
+  protected lastSyncAt: string | null = null;
+  protected lastSyncResult: "idle" | "success" | "error" = "idle";
+  protected lastSyncError: string | null = null;
+
+  /** Гидратирует одну запись из persistent storage. */
+  hydrate(record: StoredInterview): void {
+    this.byJobAiId.set(record.jobAiId, record);
+  }
+
+  /** Гидратирует sync-метаданные из persistent storage. */
+  hydrateSyncState(state: { lastSyncAt: string | null; lastSyncResult: "idle" | "success" | "error"; lastSyncError: string | null }): void {
+    this.lastSyncAt = state.lastSyncAt;
+    this.lastSyncResult = state.lastSyncResult;
+    this.lastSyncError = state.lastSyncError;
+  }
 
   upsert(rawPayload: JobAiInterview): StoredInterview {
     const existing = this.byJobAiId.get(rawPayload.id);

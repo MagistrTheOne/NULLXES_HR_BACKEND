@@ -82,3 +82,67 @@ export interface MeetingPostProcessingPayload {
 }
 
 export type MeetingWebhookEvent = MeetingStatusWebhookPayload | MeetingPostProcessingPayload;
+
+export interface CandidateAdmissionOwner {
+  participantId: string;
+  displayName: string;
+  acquiredAt: number;
+  lastSeenAt: number;
+}
+
+export interface CandidateAdmissionPending {
+  participantId: string;
+  displayName: string;
+  requestedAt: number;
+  lastSeenAt: number;
+}
+
+export interface CandidateAdmissionDecisionRecord {
+  participantId: string;
+  action: "approve" | "deny";
+  decidedAt: number;
+  decidedBy?: string;
+}
+
+export interface CandidateAdmissionState {
+  owner: CandidateAdmissionOwner | null;
+  pending: CandidateAdmissionPending[];
+  decisions: CandidateAdmissionDecisionRecord[];
+}
+
+export interface CandidateAdmissionRequest {
+  participantId: string;
+  displayName?: string;
+}
+
+export interface CandidateAdmissionRelease {
+  participantId: string;
+  reason?: string;
+}
+
+export interface CandidateAdmissionDecision {
+  participantId: string;
+  action: "approve" | "deny";
+  decidedBy?: string;
+}
+
+export interface CandidateAdmissionStatusView {
+  meetingId: string;
+  rejoinWindowMs: number;
+  owner: CandidateAdmissionOwner | null;
+  ownerActive: boolean;
+  pending: CandidateAdmissionPending[];
+  canCurrentParticipantRejoin: boolean;
+}
+
+export interface CandidateAdmissionResult {
+  granted: boolean;
+  reason: "owner_refreshed" | "auto_granted" | "awaiting_approval";
+  status: CandidateAdmissionStatusView;
+}
+
+export interface CandidateAdmissionDecisionResult {
+  action: "approve" | "deny";
+  granted: boolean;
+  status: CandidateAdmissionStatusView;
+}

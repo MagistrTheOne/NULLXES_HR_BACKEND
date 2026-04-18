@@ -24,6 +24,22 @@ const failMeetingSchema = z.object({
   metadata: z.record(z.unknown()).optional()
 });
 
+const admissionAcquireSchema = z.object({
+  participantId: z.string().min(1),
+  displayName: z.string().min(1).optional()
+});
+
+const admissionReleaseSchema = z.object({
+  participantId: z.string().min(1),
+  reason: z.string().max(200).optional()
+});
+
+const admissionDecisionSchema = z.object({
+  participantId: z.string().min(1),
+  action: z.enum(["approve", "deny"]),
+  decidedBy: z.string().min(1).max(120).optional()
+});
+
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
 ): (req: Request, res: Response, next: express.NextFunction) => void {
@@ -88,6 +104,60 @@ export function createMeetingRouter(orchestrator: MeetingOrchestrator): express.
   router.get("/", (_req: Request, res: Response) => {
     res.status(200).json({
       meetings: orchestrator.listMeetings()
+    });
+  });
+
+  // ---------------- candidate admission ----------------
+
+  router.get("/:meetingId/admission/candidate", (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    const participantIdRaw = req.query.participantId;
+    const participantId = typeof participantIdRaw === "string" ? participantIdRaw : undefined;
+    const view = orchestrator.getCandidateAdmission(meetingId, participantId);
+    res.status(200).json(view);
+  });
+
+  router.post("/:meetingId/admission/candidate/acquire", (req: Request, res: Response) => {
+    const input = parseBody(admissionAcquireSchema, req.body);
+    const result = orchestrator.acquireCandidateAdmission(req.params.meetingId, input);
+    if (result.granted) {
+      res.status(200).json(result.status);
+      return;
+    }
+    res.status(423).json({
+      error: "AdmissionAwaitingApproval",
+      message: "Кандидат уже подключен, ожидайте подтверждение HR.",
+      code: "admission.awaiting_approval",
+      ...result.status
+    });
+  });
+
+  router.post("/:meetingId/admission/candidate/release", (req: Request, res: Response) => {
+    const input = parseBody(admissionReleaseSchema, req.body);
+    const result = orchestrator.releaseCandidateAdmission(req.params.meetingId, input);
+    res.status(200).json({
+      released: result.released,
+      owner: result.status.owner,
+      pending: result.status.pending,
+      meetingId: result.status.meetingId,
+      rejoinWindowMs: result.status.rejoinWindowMs,
+      ownerActive: result.status.ownerActive,
+      canCurrentParticipantRejoin: result.status.canCurrentParticipantRejoin
+    });
+  });
+
+  router.post("/:meetingId/admission/candidate/decision", (req: Request, res: Response) => {
+    const input = parseBody(admissionDecisionSchema, req.body);
+    const result = orchestrator.decideCandidateAdmission(req.params.meetingId, input);
+    res.status(200).json({
+      action: result.action,
+      granted: result.granted,
+      owner: result.status.owner,
+      pending: result.status.pending,
+      meetingId: result.status.meetingId,
+      rejoinWindowMs: result.status.rejoinWindowMs,
+      ownerActive: result.status.ownerActive,
+      canCurrentParticipantRejoin: result.status.canCurrentParticipantRejoin
     });
   });
 

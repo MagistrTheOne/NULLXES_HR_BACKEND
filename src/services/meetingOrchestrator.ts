@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
+import { env } from "../config/env";
 import { HttpError } from "../middleware/errorHandler";
 import { logger } from "../logging/logger";
 import type {
+  CandidateAdmissionDecision,
+  CandidateAdmissionDecisionResult,
+  CandidateAdmissionRelease,
+  CandidateAdmissionRequest,
+  CandidateAdmissionResult,
+  CandidateAdmissionStatusView,
   FailMeetingInput,
   MeetingRecord,
   MeetingStatus,
@@ -63,6 +70,85 @@ export class MeetingOrchestrator {
 
   listMeetings(): MeetingRecord[] {
     return this.store.listMeetings();
+  }
+
+  getCandidateAdmission(meetingId: string, participantId?: string): CandidateAdmissionStatusView {
+    this.requireMeeting(meetingId);
+    const view = this.store.getCandidateAdmission(meetingId, participantId, env.CANDIDATE_ADMISSION_REJOIN_WINDOW_MS);
+    if (!view) {
+      throw new HttpError(404, `Meeting not found: ${meetingId}`);
+    }
+    return view;
+  }
+
+  acquireCandidateAdmission(meetingId: string, request: CandidateAdmissionRequest): CandidateAdmissionResult {
+    this.requireMeeting(meetingId);
+    const result = this.store.acquireCandidateAdmission(
+      meetingId,
+      request,
+      env.CANDIDATE_ADMISSION_REJOIN_WINDOW_MS
+    );
+    if (!result) {
+      throw new HttpError(404, `Meeting not found: ${meetingId}`);
+    }
+    logger.info(
+      {
+        meetingId,
+        participantId: request.participantId,
+        granted: result.granted,
+        reason: result.reason
+      },
+      "candidate admission acquire"
+    );
+    return result;
+  }
+
+  releaseCandidateAdmission(
+    meetingId: string,
+    request: CandidateAdmissionRelease
+  ): { released: boolean; status: CandidateAdmissionStatusView } {
+    this.requireMeeting(meetingId);
+    const result = this.store.releaseCandidateAdmission(
+      meetingId,
+      request,
+      env.CANDIDATE_ADMISSION_REJOIN_WINDOW_MS
+    );
+    if (!result) {
+      throw new HttpError(404, `Meeting not found: ${meetingId}`);
+    }
+    logger.info(
+      {
+        meetingId,
+        participantId: request.participantId,
+        released: result.released,
+        reason: request.reason
+      },
+      "candidate admission release"
+    );
+    return result;
+  }
+
+  decideCandidateAdmission(meetingId: string, decision: CandidateAdmissionDecision): CandidateAdmissionDecisionResult {
+    this.requireMeeting(meetingId);
+    const result = this.store.decideCandidateAdmission(
+      meetingId,
+      decision,
+      env.CANDIDATE_ADMISSION_REJOIN_WINDOW_MS
+    );
+    if (!result) {
+      throw new HttpError(404, `Meeting not found: ${meetingId}`);
+    }
+    logger.info(
+      {
+        meetingId,
+        participantId: decision.participantId,
+        action: decision.action,
+        granted: result.granted,
+        decidedBy: decision.decidedBy
+      },
+      "candidate admission decision"
+    );
+    return result;
   }
 
   private transition(

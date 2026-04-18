@@ -10,7 +10,7 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
-  SESSION_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  SESSION_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
   SESSION_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SDP_MAX_BYTES: z.coerce.number().int().positive().default(200000),
   OPENAI_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
@@ -24,26 +24,36 @@ const envSchema = z.object({
   JOBAI_API_TOKEN: z.string().min(1).optional(),
   JOBAI_API_BASIC_USER: z.string().min(1).optional(),
   JOBAI_API_BASIC_PASSWORD: z.string().min(1).optional(),
-  JOBAI_INGEST_SECRET: z.string().min(8).optional()
+  JOBAI_INGEST_SECRET: z.string().min(8).optional(),
+  STORAGE_BACKEND: z.enum(["memory", "redis"]).default("memory"),
+  REDIS_URL: z.string().url().optional(),
+  REDIS_PREFIX: z.string().default("nullxes:hr-ai"),
+  REDIS_SESSION_TTL_MS: z.coerce.number().int().positive().default(86400000),
+  REDIS_RECONNECT_MAX_DELAY_MS: z.coerce.number().int().positive().default(30000),
+  REDIS_HEARTBEAT_MS: z.coerce.number().int().positive().default(15000),
+  REDIS_COMMAND_QUEUE_LIMIT: z.coerce.number().int().positive().default(100),
+  CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
+  METRICS_ENABLED: z.coerce.boolean().default(true),
+  RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
+  RATE_LIMIT_TRUST_PROXY: z.coerce.boolean().default(true),
+  CANDIDATE_ADMISSION_REJOIN_WINDOW_MS: z.coerce.number().int().positive().default(60000)
 }).superRefine((values, ctx) => {
-  if (!values.JOBAI_WEBHOOK_ENABLED) {
-    return;
-  }
+  if (values.JOBAI_WEBHOOK_ENABLED) {
+    if (!values.JOBAI_WEBHOOK_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["JOBAI_WEBHOOK_URL"],
+        message: "JOBAI_WEBHOOK_URL is required when JOBAI_WEBHOOK_ENABLED=true"
+      });
+    }
 
-  if (!values.JOBAI_WEBHOOK_URL) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["JOBAI_WEBHOOK_URL"],
-      message: "JOBAI_WEBHOOK_URL is required when JOBAI_WEBHOOK_ENABLED=true"
-    });
-  }
-
-  if (!values.JOBAI_WEBHOOK_SECRET) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["JOBAI_WEBHOOK_SECRET"],
-      message: "JOBAI_WEBHOOK_SECRET is required when JOBAI_WEBHOOK_ENABLED=true"
-    });
+    if (!values.JOBAI_WEBHOOK_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["JOBAI_WEBHOOK_SECRET"],
+        message: "JOBAI_WEBHOOK_SECRET is required when JOBAI_WEBHOOK_ENABLED=true"
+      });
+    }
   }
 
   if (values.JOBAI_API_AUTH_MODE === "bearer" && !values.JOBAI_API_TOKEN) {
@@ -64,6 +74,14 @@ const envSchema = z.object({
       message: "JOBAI_API_BASIC_USER and JOBAI_API_BASIC_PASSWORD are required when JOBAI_API_AUTH_MODE=basic"
     });
   }
+
+  if (values.STORAGE_BACKEND === "redis" && !values.REDIS_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["REDIS_URL"],
+      message: "REDIS_URL is required when STORAGE_BACKEND=redis"
+    });
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -76,3 +94,4 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+export type AppEnv = typeof env;
