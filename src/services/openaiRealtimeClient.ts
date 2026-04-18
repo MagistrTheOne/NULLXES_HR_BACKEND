@@ -92,17 +92,26 @@ export class OpenAIRealtimeClient {
   }
 
   async createRealtimeCall(input: RealtimeCallRequest): Promise<RealtimeCallResult> {
-    const callsUrl = new URL(`${this.baseUrl}/realtime/calls`);
-    callsUrl.searchParams.set("model", input.session.model);
+    // GA spec (https://platform.openai.com/docs/guides/realtime-webrtc):
+    //   POST /v1/realtime/calls with multipart/form-data { sdp, session }
+    // Where `session` is the JSON session config (type, model, audio, instructions, ...).
+    // Sending raw application/sdp without the session field works for SDP negotiation
+    // but leaves voice/audio/turn_detection at server defaults and the agent may not
+    // produce audio output at all.
+    const callsUrl = `${this.baseUrl}/realtime/calls`;
+    const sessionConfig = this.getDefaultSessionConfig(input.session);
+    const formData = new FormData();
+    formData.set("sdp", input.sdp);
+    formData.set("session", JSON.stringify(sessionConfig));
 
-    const response = await fetchWithTimeout(callsUrl.toString(), {
+    const response = await fetchWithTimeout(callsUrl, {
       method: "POST",
       headers: {
+        // Don't set Content-Type — fetch sets multipart boundary automatically.
         ...this.authHeaders,
-        "Content-Type": "application/sdp",
         Accept: "application/sdp"
       },
-      body: input.sdp
+      body: formData
     });
 
     if (!response.ok) {
