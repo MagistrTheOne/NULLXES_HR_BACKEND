@@ -1,0 +1,10 @@
+{
+  "sessionID":"'$SESSION_ID'",
+  "tsms":1776159200000,
+  "payload":{
+    "event_id":"event_2122",
+    "event_type":"conversation.item.input_audio_transcription.delta",
+    "content_index":0,
+    "delta":"Hello,"
+  }
+}
