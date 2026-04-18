@@ -78,8 +78,19 @@ export class InMemoryInterviewStore {
   }
 
   list(skip = 0, take = 20): { interviews: StoredInterview[]; count: number } {
+    const ts = (raw: string | undefined): number => {
+      if (!raw) return 0;
+      const t = new Date(raw).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
     const all = Array.from(this.byJobAiId.values()).sort((a, b) => {
-      return new Date(b.rawPayload.meetingAt).getTime() - new Date(a.rawPayload.meetingAt).getTime();
+      const bc = ts(b.rawPayload.createdAt);
+      const ac = ts(a.rawPayload.createdAt);
+      if (bc !== ac) return bc - ac;
+      const bm = ts(b.rawPayload.meetingAt);
+      const am = ts(a.rawPayload.meetingAt);
+      if (bm !== am) return bm - am;
+      return b.rawPayload.id - a.rawPayload.id;
     });
     return {
       interviews: all.slice(skip, skip + take),
