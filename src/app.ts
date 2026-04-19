@@ -15,11 +15,16 @@ import {
 import { requestIdMiddleware } from "./middleware/requestId";
 import { createInterviewsRouter } from "./routes/interviews.routes";
 import { createJobAiRouter } from "./routes/jobai.routes";
+import {
+  createJoinLinksIssueRouter,
+  createJoinPublicRouter
+} from "./routes/joinLinks.routes";
 import { createTzAliasRouter } from "./routes/tzAlias.routes";
 import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
+import { JoinTokenSigner } from "./services/joinTokenSigner";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
@@ -149,6 +154,20 @@ export async function createApp(): Promise<AppContext> {
     },
     createMeetingRouter(meetingOrchestrator)
   );
+
+  // M3: signed join links (mounted before generic interviews router so that
+  // /interviews/:jobAiId/links/* is matched first; existing /interviews/:id GET
+  // handlers remain reachable because Express tries handlers in order and
+  // joinLinks routes only register /links/* sub-paths).
+  if (env.JOIN_TOKEN_SECRET) {
+    const joinTokenSigner = new JoinTokenSigner(env.JOIN_TOKEN_SECRET);
+    const joinLinksDeps = { signer: joinTokenSigner, store: storage.joinTokenStore };
+    app.use("/interviews", createJoinLinksIssueRouter(joinLinksDeps));
+    app.use("/join", createJoinPublicRouter(joinLinksDeps));
+    logger.info({ frontendBaseUrl: env.JOIN_TOKEN_FRONTEND_BASE_URL }, "join links routes enabled");
+  } else {
+    logger.warn("JOIN_TOKEN_SECRET not set — signed join links routes are disabled");
+  }
 
   app.use("/interviews", createInterviewsRouter(interviewService));
   app.use("/api/v1", createTzAliasRouter(interviewService, jobAiClient));

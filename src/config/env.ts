@@ -36,7 +36,15 @@ const envSchema = z.object({
   METRICS_ENABLED: z.coerce.boolean().default(true),
   RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
   RATE_LIMIT_TRUST_PROXY: z.coerce.boolean().default(true),
-  CANDIDATE_ADMISSION_REJOIN_WINDOW_MS: z.coerce.number().int().positive().default(60000)
+  CANDIDATE_ADMISSION_REJOIN_WINDOW_MS: z.coerce.number().int().positive().default(60000),
+  // M3: signed candidate / spectator join links
+  // JOIN_TOKEN_SECRET is required only when join-link issuance is in use; we keep
+  // it optional in the schema so existing droplet boots don't break before the
+  // operator generates a secret. Issuance routes refuse to start without it.
+  JOIN_TOKEN_SECRET: z.string().min(32).optional(),
+  JOIN_TOKEN_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  JOIN_TOKEN_FRONTEND_BASE_URL: z.string().url().default("http://localhost:3000"),
+  JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100)
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {

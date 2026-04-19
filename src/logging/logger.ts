@@ -22,6 +22,7 @@ export const logger = pino({
       "*.JOBAI_API_BASIC_PASSWORD",
       "*.JOBAI_WEBHOOK_SECRET",
       "*.JOBAI_INGEST_SECRET",
+      "*.JOIN_TOKEN_SECRET",
       "*.REDIS_URL",
       "openaiApiKey",
       "ephemeralToken",

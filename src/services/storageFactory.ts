@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { InMemoryInterviewStore } from "./interviewStore";
+import { InMemoryJoinTokenStore, RedisJoinTokenStore, type JoinTokenStore } from "./joinTokenStore";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { InMemorySessionStore } from "./sessionStore";
 import { PersistedInterviewStore } from "./persistedInterviewStore";
@@ -12,6 +13,7 @@ export interface StorageBackends {
   sessionStore: InMemorySessionStore;
   meetingStore: InMemoryMeetingStore;
   interviewStore: InMemoryInterviewStore;
+  joinTokenStore: JoinTokenStore;
   redis?: MinimalRedisClient;
   /** Метрика: количество reconnect-ов Redis (растёт монотонно). */
   redisReconnects(): number;
@@ -24,10 +26,12 @@ export async function createStorageBackends(): Promise<StorageBackends> {
     const sessionStore = new InMemorySessionStore(env.SESSION_IDLE_TIMEOUT_MS, env.SESSION_SWEEP_INTERVAL_MS);
     const meetingStore = new InMemoryMeetingStore();
     const interviewStore = new InMemoryInterviewStore();
+    const joinTokenStore = new InMemoryJoinTokenStore(env.JOIN_TOKEN_AUDIT_LIMIT);
     return {
       sessionStore,
       meetingStore,
       interviewStore,
+      joinTokenStore,
       redisReconnects: () => 0,
       close: async () => {}
     };
@@ -56,6 +60,11 @@ export async function createStorageBackends(): Promise<StorageBackends> {
   });
   const meetingStore = new PersistedMeetingStore({ redis, prefix: env.REDIS_PREFIX });
   const interviewStore = new PersistedInterviewStore({ redis, prefix: env.REDIS_PREFIX });
+  const joinTokenStore = new RedisJoinTokenStore({
+    redis,
+    prefix: env.REDIS_PREFIX,
+    capPerJobAiId: env.JOIN_TOKEN_AUDIT_LIMIT
+  });
 
   await sessionStore.loadAll();
   await meetingStore.loadAll();
@@ -65,6 +74,7 @@ export async function createStorageBackends(): Promise<StorageBackends> {
     sessionStore,
     meetingStore,
     interviewStore,
+    joinTokenStore,
     redis,
     redisReconnects: () => reconnects,
     close: async () => {

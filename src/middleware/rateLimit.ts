@@ -34,3 +34,5 @@ export const realtimeSessionLimiter = buildLimiter({ windowMs: 60_000, max: 30, 
 export const realtimeTokenLimiter = buildLimiter({ windowMs: 60_000, max: 60, name: "realtime.token" });
 export const admissionLimiter = buildLimiter({ windowMs: 60_000, max: 60, name: "meetings.admission" });
 export const jobaiIngestLimiter = buildLimiter({ windowMs: 60_000, max: 120, name: "jobai.ingest" });
+export const joinLinksIssueLimiter = buildLimiter({ windowMs: 60_000, max: 30, name: "join.issue" });
+export const joinLinksResolveLimiter = buildLimiter({ windowMs: 60_000, max: 120, name: "join.resolve" });
