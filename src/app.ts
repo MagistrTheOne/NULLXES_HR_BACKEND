@@ -25,6 +25,7 @@ import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
+import { StreamProvisioner } from "./services/streamProvisioner";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
 import { JoinTokenSigner } from "./services/joinTokenSigner";
@@ -59,13 +60,26 @@ export async function createApp(): Promise<AppContext> {
   const webhookDispatcher = new WebhookDispatcher(webhookOutbox);
   const avatarClient = new AvatarClient();
   const avatarStateStore = new AvatarStateStore();
+  const streamProvisioner =
+    avatarClient.isConfigured() && env.STREAM_API_KEY && env.STREAM_API_SECRET
+      ? new StreamProvisioner({
+          apiKey: env.STREAM_API_KEY,
+          apiSecret: env.STREAM_API_SECRET,
+          baseUrl: env.STREAM_BASE_URL
+        })
+      : undefined;
   const meetingOrchestrator = new MeetingOrchestrator(
     meetingStore,
     meetingStateMachine,
     webhookOutbox,
     postMeetingProcessor,
     avatarClient.isConfigured()
-      ? { client: avatarClient, stateStore: avatarStateStore }
+      ? {
+          client: avatarClient,
+          stateStore: avatarStateStore,
+          streamProvisioner,
+          streamCallType: env.STREAM_CALL_TYPE
+        }
       : undefined
   );
 

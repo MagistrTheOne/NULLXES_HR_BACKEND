@@ -22,11 +22,16 @@ import type { AvatarStateStore } from "./avatarStateStore";
 import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
+import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
 export interface MeetingOrchestratorAvatarDeps {
   client: AvatarClient;
   stateStore: AvatarStateStore;
+  /** Optional Stream provisioner; when provided we upsert agent + create call before kickoff. */
+  streamProvisioner?: StreamProvisioner;
+  /** Stream call type to use for provisioning (defaults match what the pod uses). */
+  streamCallType?: string;
 }
 
 export class MeetingOrchestrator {
@@ -75,16 +80,41 @@ export class MeetingOrchestrator {
 
     const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
     const agentUserId = `agent_${sessionId}`;
+    const candidateUserId = `candidate-${meeting.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
 
     this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
 
-    void this.avatar.client
-      .createSession({
-        meetingId: meeting.meetingId,
-        sessionId,
-        agentDisplayName: jobTitle ? `HR · ${jobTitle}` : "HR ассистент",
-        openaiInstructions: instructions
-      })
+    const provisioner = this.avatar.streamProvisioner;
+    const callType = this.avatar.streamCallType ?? "default";
+    const provisionStep = provisioner
+      ? provisioner
+          .provisionAgentForCall({
+            callType,
+            callId: meeting.meetingId,
+            agentUserId,
+            agentDisplayName,
+            candidateUserId,
+            candidateDisplayName: candidateName ?? "Candidate"
+          })
+          .then(() => {
+            logger.info(
+              { meetingId: meeting.meetingId, sessionId, agentUserId, candidateUserId },
+              "stream provisioned (user upserted, call created)"
+            );
+          })
+      : Promise.resolve();
+
+    void provisionStep
+      .then(() =>
+        this.avatar!.client.createSession({
+          meetingId: meeting.meetingId,
+          sessionId,
+          agentDisplayName,
+          openaiInstructions: instructions,
+          candidateUserId
+        })
+      )
       .then((response) => {
         logger.info(
           {

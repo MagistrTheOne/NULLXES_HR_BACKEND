@@ -40,13 +40,30 @@ export function mintStreamUserToken(input: StreamTokenInput): string {
     exp
   };
 
+  return signJwt(header, payload, input.apiSecret);
+}
+
+export interface StreamAdminTokenInput {
+  apiSecret: string;
+}
+
+/**
+ * Mints a Stream **server** token used for admin-only REST endpoints
+ * (upsert users, get_or_create call, etc.). Mirrors `JWTServerToken` from
+ * `@stream-io/node-sdk`: payload is just `{server: true}`, no `iat`/`exp`.
+ *
+ * NEVER expose this token to clients — it grants full project access.
+ */
+export function mintStreamAdminToken(input: StreamAdminTokenInput): string {
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload = { server: true };
+  return signJwt(header, payload, input.apiSecret);
+}
+
+function signJwt(header: object, payload: object, secret: string): string {
   const headerSegment = base64UrlEncode(JSON.stringify(header));
   const payloadSegment = base64UrlEncode(JSON.stringify(payload));
   const signingInput = `${headerSegment}.${payloadSegment}`;
-
-  const signature = createHmac("sha256", input.apiSecret)
-    .update(signingInput)
-    .digest();
-
+  const signature = createHmac("sha256", secret).update(signingInput).digest();
   return `${signingInput}.${base64UrlEncode(signature)}`;
 }
