@@ -44,7 +44,20 @@ const envSchema = z.object({
   JOIN_TOKEN_SECRET: z.string().min(32).optional(),
   JOIN_TOKEN_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   JOIN_TOKEN_FRONTEND_BASE_URL: z.string().url().default("http://localhost:3000"),
-  JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100)
+  JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100),
+  // Avatar service (RunPod H200 pod, see avatarservicenullxes)
+  AVATAR_ENABLED: z.coerce.boolean().default(false),
+  AVATAR_POD_URL: z.string().url().optional(),
+  AVATAR_SHARED_TOKEN: z.string().min(16).optional(),
+  AVATAR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  AVATAR_DEFAULT_KEY: z.string().min(1).default("anna"),
+  AVATAR_DEFAULT_EMOTION: z.string().min(1).default("neutral"),
+  AVATAR_REFERENCE_IMAGE_URL: z.string().url().optional(),
+  // Stream SFU (used by avatar pod and frontend; gateway only forwards keys to pod)
+  STREAM_API_KEY: z.string().min(1).optional(),
+  STREAM_API_SECRET: z.string().min(1).optional(),
+  STREAM_BASE_URL: z.string().url().default("https://video.stream-io-api.com"),
+  STREAM_CALL_TYPE: z.string().min(1).default("default")
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {
@@ -89,6 +102,30 @@ const envSchema = z.object({
       path: ["REDIS_URL"],
       message: "REDIS_URL is required when STORAGE_BACKEND=redis"
     });
+  }
+
+  if (values.AVATAR_ENABLED) {
+    if (!values.AVATAR_POD_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AVATAR_POD_URL"],
+        message: "AVATAR_POD_URL is required when AVATAR_ENABLED=true"
+      });
+    }
+    if (!values.AVATAR_SHARED_TOKEN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AVATAR_SHARED_TOKEN"],
+        message: "AVATAR_SHARED_TOKEN is required when AVATAR_ENABLED=true"
+      });
+    }
+    if (!values.STREAM_API_KEY || !values.STREAM_API_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["STREAM_API_KEY"],
+        message: "STREAM_API_KEY and STREAM_API_SECRET are required when AVATAR_ENABLED=true (gateway forwards them to the pod)"
+      });
+    }
   }
 });
 

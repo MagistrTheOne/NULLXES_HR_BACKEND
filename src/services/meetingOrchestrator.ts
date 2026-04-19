@@ -17,17 +17,25 @@ import type {
   StartMeetingInput,
   StopMeetingInput
 } from "../types/meeting";
+import { AvatarClient, AvatarServiceUnavailableError } from "./avatarClient";
+import type { AvatarStateStore } from "./avatarStateStore";
 import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import { WebhookOutbox } from "./webhookOutbox";
+
+export interface MeetingOrchestratorAvatarDeps {
+  client: AvatarClient;
+  stateStore: AvatarStateStore;
+}
 
 export class MeetingOrchestrator {
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
     private readonly webhookOutbox: WebhookOutbox,
-    private readonly postMeetingProcessor: PostMeetingProcessor
+    private readonly postMeetingProcessor: PostMeetingProcessor,
+    private readonly avatar?: MeetingOrchestratorAvatarDeps
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -39,10 +47,85 @@ export class MeetingOrchestrator {
     this.transition(input.internalMeetingId, "starting", "meeting_start_requested", input.metadata, input.sessionId);
     this.transition(input.internalMeetingId, "in_meeting", "meeting_started", input.metadata, input.sessionId);
     const meeting = this.requireMeeting(input.internalMeetingId);
+
+    // Fire-and-forget avatar pod kickoff. We never await this — the meeting
+    // is considered started even if the GPU pod is slow / down. The pod will
+    // post back to /avatar/events when it is ready, and the frontend polls
+    // /avatar/state/:meetingId to know when to render the live tile.
+    this.kickoffAvatar(meeting, input);
+
     return {
       meeting,
       history: this.store.getMeetingHistory(meeting.meetingId)
     };
+  }
+
+  private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
+    if (!this.avatar || !this.avatar.client.isConfigured()) {
+      return;
+    }
+    const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
+    const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
+    const candidateName =
+      typeof interviewContext.candidateName === "string"
+        ? (interviewContext.candidateName as string)
+        : undefined;
+    const jobTitle =
+      typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
+
+    const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
+    const agentUserId = `agent_${sessionId}`;
+
+    this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
+
+    void this.avatar.client
+      .createSession({
+        meetingId: meeting.meetingId,
+        sessionId,
+        agentDisplayName: jobTitle ? `HR · ${jobTitle}` : "HR ассистент",
+        openaiInstructions: instructions
+      })
+      .then((response) => {
+        logger.info(
+          {
+            meetingId: meeting.meetingId,
+            sessionId,
+            podStatus: response.status,
+            agentUserId: response.agent_user_id
+          },
+          "avatar pod kickoff accepted"
+        );
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (err instanceof AvatarServiceUnavailableError) {
+          logger.error(
+            { meetingId: meeting.meetingId, sessionId, message },
+            "avatar pod kickoff failed (pod unavailable) — meeting continues without avatar tile"
+          );
+        } else {
+          logger.error(
+            { meetingId: meeting.meetingId, sessionId, message },
+            "avatar pod kickoff failed (unexpected)"
+          );
+        }
+        this.avatar?.stateStore.recordEvent(meeting.meetingId, {
+          sessionId,
+          phase: "failed",
+          lastError: message
+        });
+      });
+  }
+
+  private composeOpeningInstructions(jobTitle?: string, candidateName?: string): string {
+    const role = jobTitle ?? "позицию в нашей команде";
+    const greeting = candidateName ? `${candidateName}, добрый день!` : "Добрый день!";
+    return [
+      "Ты — AI-интервьюер компании NULLXES. Веди структурированный скрининговый созвон на русском языке.",
+      `${greeting} Сначала кратко представься, потом обозначь цель — ознакомительное интервью на ${role}.`,
+      "Задавай по одному вопросу за раз. Слушай кандидата, не перебивай. Реплики держи короче 25 секунд.",
+      "Если кандидат уходит от темы, мягко возвращай к вопросу. В конце поблагодари и опиши следующий шаг."
+    ].join(" ");
   }
 
   stopMeeting(meetingId: string, input: StopMeetingInput): { meeting: MeetingRecord; transition: MeetingTransitionEvent } {
@@ -53,13 +136,27 @@ export class MeetingOrchestrator {
     if (finalStatus === "completed") {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
+    this.teardownAvatar(meetingId);
     return { meeting, transition };
+  }
+
+  private teardownAvatar(meetingId: string): void {
+    if (!this.avatar || !this.avatar.client.isConfigured()) {
+      return;
+    }
+    const state = this.avatar.stateStore.get(meetingId);
+    if (!state) {
+      return;
+    }
+    void this.avatar.client.deleteSession(state.sessionId);
+    this.avatar.stateStore.remove(meetingId);
   }
 
   failMeeting(meetingId: string, input: FailMeetingInput): { meeting: MeetingRecord; transition: MeetingTransitionEvent } {
     this.requireMeeting(meetingId);
     const transition = this.transition(meetingId, input.status, input.reason, input.metadata);
     const meeting = this.requireMeeting(meetingId);
+    this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
 

@@ -13,6 +13,7 @@ import {
   realtimeTokenLimiter
 } from "./middleware/rateLimit";
 import { requestIdMiddleware } from "./middleware/requestId";
+import { createAvatarRouter } from "./routes/avatar.routes";
 import { createInterviewsRouter } from "./routes/interviews.routes";
 import { createJobAiRouter } from "./routes/jobai.routes";
 import {
@@ -22,6 +23,8 @@ import {
 import { createTzAliasRouter } from "./routes/tzAlias.routes";
 import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
+import { AvatarClient } from "./services/avatarClient";
+import { AvatarStateStore } from "./services/avatarStateStore";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
 import { JoinTokenSigner } from "./services/joinTokenSigner";
@@ -54,12 +57,33 @@ export async function createApp(): Promise<AppContext> {
   const webhookOutbox = new WebhookOutbox();
   const postMeetingProcessor = new PostMeetingProcessor(webhookOutbox);
   const webhookDispatcher = new WebhookDispatcher(webhookOutbox);
+  const avatarClient = new AvatarClient();
+  const avatarStateStore = new AvatarStateStore();
   const meetingOrchestrator = new MeetingOrchestrator(
     meetingStore,
     meetingStateMachine,
     webhookOutbox,
-    postMeetingProcessor
+    postMeetingProcessor,
+    avatarClient.isConfigured()
+      ? { client: avatarClient, stateStore: avatarStateStore }
+      : undefined
   );
+
+  if (avatarClient.isConfigured()) {
+    logger.info(
+      {
+        avatarPodUrl: env.AVATAR_POD_URL,
+        avatarDefaultKey: env.AVATAR_DEFAULT_KEY,
+        streamCallType: env.STREAM_CALL_TYPE
+      },
+      "avatar service wiring enabled — POST /meetings/start will kick off pod"
+    );
+  } else {
+    logger.warn(
+      { avatarEnabled: env.AVATAR_ENABLED },
+      "avatar service wiring disabled (set AVATAR_ENABLED=true and provide AVATAR_POD_URL/AVATAR_SHARED_TOKEN/STREAM_API_KEY/STREAM_API_SECRET to enable)"
+    );
+  }
 
   const metrics = env.METRICS_ENABLED
     ? createMetricsContext({
@@ -171,6 +195,11 @@ export async function createApp(): Promise<AppContext> {
 
   app.use("/interviews", createInterviewsRouter(interviewService));
   app.use("/api/v1", createTzAliasRouter(interviewService, jobAiClient));
+
+  app.use(
+    "/avatar",
+    createAvatarRouter({ avatarClient, stateStore: avatarStateStore })
+  );
   app.use(
     "/",
     (req, res, next) => {
