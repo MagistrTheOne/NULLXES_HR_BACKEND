@@ -121,7 +121,7 @@ export class AvatarClient {
       arachne: {
         prompt: "A professional HR interviewer speaking warmly to camera, neutral office background.",
         resolution: "480p" as const,
-        num_frames: 93,
+        num_frames: 25,
         num_inference_steps: 8,
         text_guidance_scale: 4.0,
         audio_guidance_scale: 4.0
