@@ -85,6 +85,14 @@ export class OpenAIRealtimeClient {
     this.authHeaders = {
       Authorization: `Bearer ${env.OPENAI_API_KEY}`
     };
+    logger.info(
+      {
+        baseUrl: this.baseUrl,
+        model: env.OPENAI_REALTIME_MODEL,
+        voice: env.OPENAI_REALTIME_VOICE
+      },
+      "openai realtime client configured"
+    );
   }
 
   getDefaultSessionConfig(overrides?: Partial<SessionConfig>): SessionConfig {
