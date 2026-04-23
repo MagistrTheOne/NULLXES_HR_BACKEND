@@ -19,6 +19,12 @@ export interface SessionConfig {
   type: "realtime";
   model: string;
   audio: RealtimeAudioConfig;
+  turn_detection?: {
+    type: "server_vad";
+    threshold?: number;
+    prefix_padding_ms?: number;
+    silence_duration_ms?: number;
+  };
 }
 
 export interface SessionRecord {

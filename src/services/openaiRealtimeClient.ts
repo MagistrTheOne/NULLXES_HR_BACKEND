@@ -12,6 +12,12 @@ function buildSessionConfig(overrides?: Partial<SessionConfig>): SessionConfig {
   return {
     type: "realtime",
     model: env.OPENAI_REALTIME_MODEL,
+    turn_detection: {
+      type: env.OPENAI_TURN_DETECTION_TYPE,
+      threshold: env.OPENAI_TURN_DETECTION_THRESHOLD,
+      prefix_padding_ms: env.OPENAI_TURN_DETECTION_PREFIX_PADDING_MS,
+      silence_duration_ms: env.OPENAI_TURN_DETECTION_SILENCE_DURATION_MS
+    },
     audio: {
       input: {
         format: {
