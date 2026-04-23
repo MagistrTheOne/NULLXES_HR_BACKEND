@@ -5,6 +5,7 @@ import { JobAiClient } from "./jobaiClient";
 import { allowedJobAiTransitions, type JobAiInterview, type JobAiInterviewStatus, type StoredInterview } from "../types/interview";
 
 const KNOWN_STATUSES = new Set<string>(Object.keys(allowedJobAiTransitions));
+const TERMINAL_LOCK_STATUSES = new Set<JobAiInterviewStatus>(["canceled", "completed"]);
 
 type ListOptions = {
   skip?: number;
@@ -20,7 +21,31 @@ export class InterviewSyncService {
 
   async ingestWebhook(payload: unknown): Promise<StoredInterview> {
     const interview = this.unwrapInterview(payload);
+    const existing = this.store.getByJobAiId(interview.id);
+
+    if (
+      existing &&
+      TERMINAL_LOCK_STATUSES.has(existing.rawPayload.status) &&
+      existing.rawPayload.status !== interview.status
+    ) {
+      logger.warn(
+        {
+          jobAiId: interview.id,
+          lockedStatus: existing.rawPayload.status,
+          incomingStatus: interview.status
+        },
+        "webhook ingest: ignored status downgrade after terminal lock"
+      );
+      return existing;
+    }
+
     const stored = this.store.upsert(interview);
+
+    // Partner requirement: once canceled webhook is received, do NOT perform
+    // any outbound status mutations from our side.
+    if (stored.rawPayload.status === "canceled") {
+      return stored;
+    }
 
     // Partner request: once webhook is received, mark pending interviews as received.
     // Do it as best-effort so webhook ingest never fails because of downstream status API issues.
