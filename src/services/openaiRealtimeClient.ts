@@ -95,7 +95,13 @@ export class OpenAIRealtimeClient {
       {
         baseUrl: this.baseUrl,
         model: env.OPENAI_REALTIME_MODEL,
-        voice: env.OPENAI_REALTIME_VOICE
+        voice: env.OPENAI_REALTIME_VOICE,
+        turnDetection: {
+          type: env.OPENAI_TURN_DETECTION_TYPE,
+          threshold: env.OPENAI_TURN_DETECTION_THRESHOLD,
+          prefixPaddingMs: env.OPENAI_TURN_DETECTION_PREFIX_PADDING_MS,
+          silenceDurationMs: env.OPENAI_TURN_DETECTION_SILENCE_DURATION_MS
+        }
       },
       "openai realtime client configured"
     );
