@@ -308,3 +308,69 @@ curl -i http://127.0.0.1:8080/health
 curl -s -o /dev/null -w "realtime_session_status=%{http_code}\n" http://127.0.0.1:8080/realtime/session/test-404
 ```
 
+---
+
+## 14) Full bootstrap command (current prod-like env)
+
+Ниже команда полного bootstrap/restore с фиксированными значениями `.env` (без плейсхолдеров), как в текущем рабочем стенде:
+
+```bash
+cd /root && \
+[ -d /root/NULLXES_HR_BACKEND ] || git clone https://github.com/MagistrTheOne/NULLXES_HR_BACKEND.git /root/NULLXES_HR_BACKEND && \
+cd /root/NULLXES_HR_BACKEND && \
+cat > .env <<'EOF'
+NODE_ENV=production
+PORT=8080
+OPENAI_API_KEY="REDACTED_OPENAI_API_KEY"
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_REALTIME_MODEL=gpt-realtime
+OPENAI_REALTIME_VOICE=marin
+OPENAI_HTTP_TIMEOUT_MS=20000
+SESSION_IDLE_TIMEOUT_MS=300000
+SESSION_SWEEP_INTERVAL_MS=30000
+SDP_MAX_BYTES=200000
+JOBAI_API_BASE_URL=https://back.dev.job-ai.ru
+JOBAI_API_AUTH_MODE=bearer
+JOBAI_API_TOKEN=REDACTED_JOBAI_API_TOKEN
+JOBAI_INGEST_SECRET=REDACTED_JOBAI_INGEST_SECRET
+STORAGE_BACKEND=redis
+REDIS_URL=redis://127.0.0.1:6379/0
+REDIS_PREFIX=nullxes:hr-ai
+REDIS_SESSION_TTL_MS=86400000
+CORS_ALLOWED_ORIGINS=https://nullxesjobaitest.vercel.app
+JOIN_TOKEN_SECRET=REDACTED_JOIN_TOKEN_SECRET
+JOIN_TOKEN_DEFAULT_TTL_MS=86400000
+JOIN_TOKEN_FRONTEND_BASE_URL=https://nullxesjobaitest.vercel.app
+GATEWAY_SHARED_TOKEN=REDACTED_GATEWAY_OR_AVATAR_SHARED_TOKEN
+AVATAR_POD_URL=https://vmo69fb22rtzyh-8080.proxy.runpod.net
+AVATAR_SHARED_TOKEN=REDACTED_GATEWAY_OR_AVATAR_SHARED_TOKEN
+AVATAR_ENABLED=true
+AVATAR_DEFAULT_KEY=anna
+AVATAR_DEFAULT_EMOTION=neutral
+STREAM_API_KEY=kuq8jqkz2ahw
+STREAM_API_SECRET=REDACTED_STREAM_API_SECRET
+STREAM_BASE_URL=https://video.stream-io-api.com
+STREAM_CALL_TYPE=default
+AVATAR_REFERENCE_IMAGE_URL=https://raw.githubusercontent.com/MagistrTheOne/avatarservicenullxes/main/assets/avatars/anna.jpg
+OPENAI_TURN_DETECTION_TYPE=server_vad
+OPENAI_TURN_DETECTION_THRESHOLD=0.72
+OPENAI_TURN_DETECTION_PREFIX_PADDING_MS=450
+OPENAI_TURN_DETECTION_SILENCE_DURATION_MS=900
+REDIS_RECONNECT_MAX_DELAY_MS=30000
+REDIS_HEARTBEAT_MS=15000
+REDIS_COMMAND_QUEUE_LIMIT=100
+METRICS_ENABLED=true
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_TRUST_PROXY=true
+CANDIDATE_ADMISSION_REJOIN_WINDOW_MS=60000
+JOIN_TOKEN_AUDIT_LIMIT=100
+AVATAR_HTTP_TIMEOUT_MS=15000
+EOF
+
+npm ci && npm run build && \
+sudo systemctl restart nullxes-hr-backend && \
+sudo systemctl status nullxes-hr-backend -l --no-pager -n 80 && \
+curl -i http://127.0.0.1:8080/health && \
+curl -s -o /dev/null -w "realtime_session_status=%{http_code}\n" http://127.0.0.1:8080/realtime/session/test-404
+```
+

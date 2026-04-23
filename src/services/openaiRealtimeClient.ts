@@ -111,6 +111,16 @@ export class OpenAIRealtimeClient {
     return buildSessionConfig(overrides);
   }
 
+  private getClientSecretSessionConfig(overrides?: Partial<SessionConfig>): SessionConfig {
+    const config = this.getDefaultSessionConfig(overrides);
+    // OpenAI /realtime/client_secrets currently rejects session.turn_detection
+    // with "Unknown parameter: 'session.turn_detection'".
+    const { turn_detection: _ignored, ...safeConfig } = config as SessionConfig & {
+      turn_detection?: SessionConfig["turn_detection"];
+    };
+    return safeConfig as SessionConfig;
+  }
+
   async createRealtimeCall(input: RealtimeCallRequest): Promise<RealtimeCallResult> {
     // GA spec (https://platform.openai.com/docs/guides/realtime-webrtc):
     //   POST /v1/realtime/calls with multipart/form-data { sdp, session }
@@ -160,7 +170,7 @@ export class OpenAIRealtimeClient {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        session: this.getDefaultSessionConfig(session)
+        session: this.getClientSecretSessionConfig(session)
       })
     });
 
