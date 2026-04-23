@@ -174,13 +174,22 @@ export class InterviewSyncService {
       throw new HttpError(400, "Invalid webhook payload");
     }
     const interview = candidate as Record<string, unknown>;
-    if (typeof interview.id !== "number" || typeof interview.status !== "string") {
+    // New preferred key from partner webhook: interviewId.
+    // Keep legacy id for backward compatibility during migration.
+    const rawInterviewId = typeof interview.interviewId === "number"
+      ? interview.interviewId
+      : typeof interview.id === "number"
+        ? interview.id
+        : undefined;
+    if (typeof rawInterviewId !== "number" || typeof interview.status !== "string") {
       throw new HttpError(400, "Invalid interview object");
     }
     if (!KNOWN_STATUSES.has(interview.status)) {
       throw new HttpError(400, "Invalid interview status");
     }
-
-    return interview as unknown as JobAiInterview;
+    return {
+      ...interview,
+      id: rawInterviewId
+    } as unknown as JobAiInterview;
   }
 }
