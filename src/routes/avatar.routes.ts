@@ -4,6 +4,7 @@ import { logger } from "../logging/logger";
 import { HttpError } from "../middleware/errorHandler";
 import type { AvatarClient } from "../services/avatarClient";
 import type { AvatarStateStore, AvatarPhase } from "../services/avatarStateStore";
+import type { RuntimeEventStore } from "../services/runtimeEventStore";
 
 /**
  * Endpoints consumed by the avatar pod (avatarservicenullxes on RunPod).
@@ -64,6 +65,7 @@ function asyncHandler(
 export interface AvatarRouterDeps {
   avatarClient: AvatarClient;
   stateStore: AvatarStateStore;
+  runtimeEvents?: RuntimeEventStore;
 }
 
 export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
@@ -93,6 +95,18 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
         phase,
         lastError
       });
+      void deps.runtimeEvents?.append({
+        type: "avatar.event",
+        meetingId: event.meeting_id,
+        sessionId: event.session_id,
+        actor: "avatar.pod",
+        payload: {
+          eventType: event.type,
+          phase,
+          data: event.data ?? {},
+          known: Boolean(updated)
+        }
+      }).catch(() => undefined);
 
       logger.info(
         {

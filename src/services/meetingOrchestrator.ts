@@ -14,6 +14,7 @@ import type {
   MeetingStatus,
   MeetingTransitionEvent,
   MeetingWebhookEvent,
+  MeetingFailureReasonCode,
   StartMeetingInput,
   StopMeetingInput
 } from "../types/meeting";
@@ -22,6 +23,7 @@ import type { AvatarStateStore } from "./avatarStateStore";
 import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
+import type { RuntimeEventStore } from "./runtimeEventStore";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -40,7 +42,8 @@ export class MeetingOrchestrator {
     private readonly stateMachine: MeetingStateMachine,
     private readonly webhookOutbox: WebhookOutbox,
     private readonly postMeetingProcessor: PostMeetingProcessor,
-    private readonly avatar?: MeetingOrchestratorAvatarDeps
+    private readonly avatar?: MeetingOrchestratorAvatarDeps,
+    private readonly runtimeEvents?: RuntimeEventStore
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -184,10 +187,50 @@ export class MeetingOrchestrator {
 
   failMeeting(meetingId: string, input: FailMeetingInput): { meeting: MeetingRecord; transition: MeetingTransitionEvent } {
     this.requireMeeting(meetingId);
-    const transition = this.transition(meetingId, input.status, input.reason, input.metadata);
+    const failMetadata = this.buildFailureMetadata(input);
+    const transition = this.transition(meetingId, input.status, input.reason, failMetadata);
     const meeting = this.requireMeeting(meetingId);
+    logger.warn(
+      {
+        meetingId,
+        status: input.status,
+        reason: input.reason,
+        reasonCode: failMetadata.failureReasonCode,
+        failureSource: failMetadata.failureSource
+      },
+      "meeting failed"
+    );
     this.teardownAvatar(meetingId);
     return { meeting, transition };
+  }
+
+  private inferFailureReasonCode(input: FailMeetingInput): MeetingFailureReasonCode {
+    const explicit = input.reasonCode;
+    if (explicit) {
+      return explicit;
+    }
+    const reason = `${input.reason} ${JSON.stringify(input.metadata ?? {})}`.toLowerCase();
+    if (reason.includes("openai client secret")) return "openai_client_secret_failed";
+    if (reason.includes("openai") || reason.includes("realtime session failed")) return "openai_call_failed";
+    if (reason.includes("stream") || reason.includes("sfu")) return "sfu_join_failed";
+    if (reason.includes("timeout") || reason.includes("timed out")) return "network_timeout";
+    if (reason.includes("permission") || reason.includes("notallowederror")) return "device_permission_denied";
+    if (reason.includes("audio input") || reason.includes("getusermedia")) return "audio_input_unavailable";
+    if (reason.includes("upstream") || reason.includes("gateway")) return "gateway_upstream_unreachable";
+    return "unknown";
+  }
+
+  private buildFailureMetadata(input: FailMeetingInput): Record<string, unknown> {
+    const base = { ...(input.metadata ?? {}) };
+    const hasReasonCode = typeof base.failureReasonCode === "string" && String(base.failureReasonCode).trim().length > 0;
+    if (!hasReasonCode) {
+      base.failureReasonCode = this.inferFailureReasonCode(input);
+    }
+    const hasSource = typeof base.failureSource === "string" && String(base.failureSource).trim().length > 0;
+    if (!hasSource) {
+      base.failureSource = "meeting.fail.endpoint";
+    }
+    return base;
   }
 
   getMeeting(meetingId: string): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -227,6 +270,11 @@ export class MeetingOrchestrator {
       },
       "candidate admission acquire"
     );
+    this.recordRuntimeEvent("candidate.admission.acquire", meetingId, {
+      participantId: request.participantId,
+      granted: result.granted,
+      reason: result.reason
+    });
     return result;
   }
 
@@ -252,6 +300,11 @@ export class MeetingOrchestrator {
       },
       "candidate admission release"
     );
+    this.recordRuntimeEvent("candidate.admission.release", meetingId, {
+      participantId: request.participantId,
+      released: result.released,
+      reason: request.reason
+    });
     return result;
   }
 
@@ -275,6 +328,12 @@ export class MeetingOrchestrator {
       },
       "candidate admission decision"
     );
+    this.recordRuntimeEvent("candidate.admission.decision", meetingId, {
+      participantId: decision.participantId,
+      action: decision.action,
+      granted: result.granted,
+      decidedBy: decision.decidedBy
+    });
     return result;
   }
 
@@ -305,7 +364,28 @@ export class MeetingOrchestrator {
       },
       "meeting status transitioned"
     );
+    this.recordRuntimeEvent("meeting.transition", meetingId, {
+      fromStatus: transition.fromStatus,
+      toStatus: transition.toStatus,
+      reason,
+      transitionId: transition.id
+    }, transition.sessionId);
     return transition;
+  }
+
+  private recordRuntimeEvent(
+    type: "meeting.transition" | "candidate.admission.acquire" | "candidate.admission.release" | "candidate.admission.decision",
+    meetingId: string,
+    payload: Record<string, unknown>,
+    sessionId?: string
+  ): void {
+    void this.runtimeEvents?.append({
+      type,
+      meetingId,
+      sessionId,
+      actor: "meeting.orchestrator",
+      payload
+    }).catch(() => undefined);
   }
 
   private enqueueStatusWebhook(transition: MeetingTransitionEvent): void {

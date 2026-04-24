@@ -108,6 +108,11 @@ export class MinimalRedisClient {
     await this.command(["SET", key, value]);
   }
 
+  async setIfAbsent(key: string, value: string, ttlMs: number): Promise<boolean> {
+    const reply = await this.command(["SET", key, value, "PX", String(Math.floor(ttlMs)), "NX"]);
+    return reply === "OK";
+  }
+
   async del(key: string): Promise<void> {
     await this.command(["DEL", key]);
   }

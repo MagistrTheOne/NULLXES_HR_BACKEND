@@ -14,6 +14,15 @@ export type MeetingTerminalStatus =
   | "completed";
 
 export type MeetingFailStatus = "failed_audio_pool_busy" | "failed_connect_ws_audio";
+export type MeetingFailureReasonCode =
+  | "openai_call_failed"
+  | "openai_client_secret_failed"
+  | "sfu_join_failed"
+  | "network_timeout"
+  | "device_permission_denied"
+  | "audio_input_unavailable"
+  | "gateway_upstream_unreachable"
+  | "unknown";
 
 export type MeetingStopReason = "manual_stop" | "superseded_by_other_meeting" | "error";
 
@@ -56,6 +65,7 @@ export interface StopMeetingInput {
 export interface FailMeetingInput {
   status: MeetingFailStatus;
   reason: string;
+  reasonCode?: MeetingFailureReasonCode;
   metadata?: Record<string, unknown>;
 }
 

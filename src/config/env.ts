@@ -10,6 +10,7 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime"),
   OPENAI_REALTIME_VOICE: z.string().default("marin"),
+  OPENAI_TURN_DETECTION_ENABLED: z.coerce.boolean().default(false),
   OPENAI_TURN_DETECTION_TYPE: z.enum(["server_vad"]).default("server_vad"),
   OPENAI_TURN_DETECTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
   OPENAI_TURN_DETECTION_PREFIX_PADDING_MS: z.coerce.number().int().min(0).default(450),

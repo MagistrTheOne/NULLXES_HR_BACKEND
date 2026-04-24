@@ -9,15 +9,20 @@ import type {
 } from "../types/realtime";
 
 function buildSessionConfig(overrides?: Partial<SessionConfig>): SessionConfig {
+  const maybeTurnDetection = env.OPENAI_TURN_DETECTION_ENABLED
+    ? {
+        turn_detection: {
+          type: env.OPENAI_TURN_DETECTION_TYPE,
+          threshold: env.OPENAI_TURN_DETECTION_THRESHOLD,
+          prefix_padding_ms: env.OPENAI_TURN_DETECTION_PREFIX_PADDING_MS,
+          silence_duration_ms: env.OPENAI_TURN_DETECTION_SILENCE_DURATION_MS
+        }
+      }
+    : {};
   return {
     type: "realtime",
     model: env.OPENAI_REALTIME_MODEL,
-    turn_detection: {
-      type: env.OPENAI_TURN_DETECTION_TYPE,
-      threshold: env.OPENAI_TURN_DETECTION_THRESHOLD,
-      prefix_padding_ms: env.OPENAI_TURN_DETECTION_PREFIX_PADDING_MS,
-      silence_duration_ms: env.OPENAI_TURN_DETECTION_SILENCE_DURATION_MS
-    },
+    ...maybeTurnDetection,
     audio: {
       input: {
         format: {
@@ -96,6 +101,7 @@ export class OpenAIRealtimeClient {
         baseUrl: this.baseUrl,
         model: env.OPENAI_REALTIME_MODEL,
         voice: env.OPENAI_REALTIME_VOICE,
+        turnDetectionEnabled: env.OPENAI_TURN_DETECTION_ENABLED,
         turnDetection: {
           type: env.OPENAI_TURN_DETECTION_TYPE,
           threshold: env.OPENAI_TURN_DETECTION_THRESHOLD,

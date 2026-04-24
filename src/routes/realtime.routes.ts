@@ -4,6 +4,7 @@ import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { HttpError } from "../middleware/errorHandler";
 import { OpenAIRealtimeClient } from "../services/openaiRealtimeClient";
+import type { RuntimeEventStore } from "../services/runtimeEventStore";
 import { InMemorySessionStore } from "../services/sessionStore";
 import type { DataChannelEventPayload } from "../types/realtime";
 
@@ -15,6 +16,7 @@ const sdpBodyParser = express.raw({
 interface RealtimeRouterDeps {
   openAIClient: OpenAIRealtimeClient;
   sessionStore: InMemorySessionStore;
+  runtimeEvents?: RuntimeEventStore;
 }
 
 const keyAliases: Record<string, string> = {
@@ -218,6 +220,27 @@ export function createRealtimeRouter(deps: RealtimeRouterDeps): express.Router {
 
     const event = validateDataChannelEvent(req.body, sessionId);
     deps.sessionStore.registerEvent(sessionId, event);
+    const normalized =
+      event.normalizedPayload && typeof event.normalizedPayload === "object"
+        ? (event.normalizedPayload as Record<string, unknown>)
+        : {};
+    const meetingId =
+      typeof event.meetingId === "string"
+        ? event.meetingId
+        : typeof normalized.meetingId === "string"
+          ? normalized.meetingId
+          : undefined;
+    void deps.runtimeEvents?.append({
+      type: "realtime.session.event",
+      meetingId,
+      sessionId,
+      actor: typeof event.source === "string" ? event.source : "client",
+      payload: {
+        eventType: event.type,
+        rawPayload: event.rawPayload,
+        normalizedPayload: event.normalizedPayload
+      }
+    }).catch(() => undefined);
 
     logger.info(
       {

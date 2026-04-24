@@ -23,6 +23,7 @@ import {
 import { createTzAliasRouter } from "./routes/tzAlias.routes";
 import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
+import { createRuntimeRouter } from "./routes/runtime.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
 import { StreamProvisioner } from "./services/streamProvisioner";
@@ -33,6 +34,9 @@ import { MeetingOrchestrator } from "./services/meetingOrchestrator";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
 import { PostMeetingProcessor } from "./services/postMeetingProcessor";
+import { RuntimeEventStore } from "./services/runtimeEventStore";
+import { RuntimeLeaseStore } from "./services/runtimeLeaseStore";
+import { RuntimeSnapshotService } from "./services/runtimeSnapshotService";
 import { createStorageBackends, type StorageBackends } from "./services/storageFactory";
 import type { InMemorySessionStore } from "./services/sessionStore";
 import { WebhookDispatcher } from "./services/webhookDispatcher";
@@ -55,9 +59,21 @@ export async function createApp(): Promise<AppContext> {
   const jobAiClient = new JobAiClient();
   const interviewService = new InterviewSyncService(jobAiClient, interviewStore);
   const meetingStateMachine = new MeetingStateMachine();
-  const webhookOutbox = new WebhookOutbox();
+  const webhookOutbox = new WebhookOutbox({
+    redis: storage.redis,
+    prefix: env.REDIS_PREFIX
+  });
+  await webhookOutbox.loadAll();
   const postMeetingProcessor = new PostMeetingProcessor(webhookOutbox);
   const webhookDispatcher = new WebhookDispatcher(webhookOutbox);
+  const runtimeEvents = new RuntimeEventStore({
+    redis: storage.redis,
+    prefix: env.REDIS_PREFIX
+  });
+  const runtimeLeases = new RuntimeLeaseStore({
+    redis: storage.redis,
+    prefix: env.REDIS_PREFIX
+  });
   const avatarClient = new AvatarClient();
   const avatarStateStore = new AvatarStateStore();
   const streamProvisioner =
@@ -80,8 +96,17 @@ export async function createApp(): Promise<AppContext> {
           streamProvisioner,
           streamCallType: env.STREAM_CALL_TYPE
         }
-      : undefined
+      : undefined,
+    runtimeEvents
   );
+  const runtimeSnapshots = new RuntimeSnapshotService({
+    meetingStore,
+    sessionStore,
+    interviewStore,
+    avatarStateStore,
+    runtimeEvents,
+    streamCallType: env.STREAM_CALL_TYPE
+  });
 
   if (avatarClient.isConfigured()) {
     logger.info(
@@ -178,7 +203,8 @@ export async function createApp(): Promise<AppContext> {
     },
     createRealtimeRouter({
       openAIClient,
-      sessionStore
+      sessionStore,
+      runtimeEvents
     })
   );
 
@@ -209,10 +235,18 @@ export async function createApp(): Promise<AppContext> {
 
   app.use("/interviews", createInterviewsRouter(interviewService));
   app.use("/api/v1", createTzAliasRouter(interviewService, jobAiClient));
+  app.use(
+    "/runtime",
+    createRuntimeRouter({
+      snapshots: runtimeSnapshots,
+      events: runtimeEvents,
+      leases: runtimeLeases
+    })
+  );
 
   app.use(
     "/avatar",
-    createAvatarRouter({ avatarClient, stateStore: avatarStateStore })
+    createAvatarRouter({ avatarClient, stateStore: avatarStateStore, runtimeEvents })
   );
   app.use(
     "/",

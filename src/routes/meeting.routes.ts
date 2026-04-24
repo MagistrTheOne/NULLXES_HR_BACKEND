@@ -21,6 +21,18 @@ const stopMeetingSchema = z.object({
 const failMeetingSchema = z.object({
   status: z.enum(["failed_audio_pool_busy", "failed_connect_ws_audio"]),
   reason: z.string().min(1),
+  reasonCode: z
+    .enum([
+      "openai_call_failed",
+      "openai_client_secret_failed",
+      "sfu_join_failed",
+      "network_timeout",
+      "device_permission_denied",
+      "audio_input_unavailable",
+      "gateway_upstream_unreachable",
+      "unknown"
+    ])
+    .optional(),
   metadata: z.record(z.unknown()).optional()
 });
 
