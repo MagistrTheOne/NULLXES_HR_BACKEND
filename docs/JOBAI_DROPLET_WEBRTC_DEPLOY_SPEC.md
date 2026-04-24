@@ -312,7 +312,7 @@ curl -s -o /dev/null -w "realtime_session_status=%{http_code}\n" http://127.0.0.
 
 ## 14) Full bootstrap command (current prod-like env)
 
-Ниже команда полного bootstrap/restore с фиксированными значениями `.env` (без плейсхолдеров), как в текущем рабочем стенде:
+Ниже команда полного bootstrap/restore с **шаблоном** `.env`: подставьте реальные значения из vault/менеджера секретов (в репозитории не хранятся).
 
 ```bash
 cd /root && \
@@ -347,7 +347,7 @@ AVATAR_SHARED_TOKEN=REDACTED_GATEWAY_OR_AVATAR_SHARED_TOKEN
 AVATAR_ENABLED=true
 AVATAR_DEFAULT_KEY=anna
 AVATAR_DEFAULT_EMOTION=neutral
-STREAM_API_KEY=kuq8jqkz2ahw
+STREAM_API_KEY=REDACTED_STREAM_API_KEY
 STREAM_API_SECRET=REDACTED_STREAM_API_SECRET
 STREAM_BASE_URL=https://video.stream-io-api.com
 STREAM_CALL_TYPE=default
