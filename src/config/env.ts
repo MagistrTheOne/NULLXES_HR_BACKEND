@@ -9,7 +9,10 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime"),
-  OPENAI_REALTIME_VOICE: z.string().default("marin"),
+  // Realtime built-in voices per OpenAI docs include:
+  // alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar.
+  // Default to a feminine sounding voice for HR interviewer tone.
+  OPENAI_REALTIME_VOICE: z.string().default("shimmer"),
   OPENAI_TURN_DETECTION_ENABLED: z.coerce.boolean().default(false),
   OPENAI_TURN_DETECTION_TYPE: z.enum(["server_vad"]).default("server_vad"),
   OPENAI_TURN_DETECTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
