@@ -37,6 +37,16 @@ const eventIngestSchema = z.object({
   payload: z.record(z.unknown()).optional()
 });
 
+const OBSERVER_ALLOWED_COMMANDS = new Set<RuntimeCommandInput["type"]>(["observer.reconnect"]);
+
+function isObserverActor(issuedBy?: string): boolean {
+  if (!issuedBy) {
+    return false;
+  }
+  const actor = issuedBy.trim().toLowerCase();
+  return actor === "observer_ui" || actor.startsWith("observer:");
+}
+
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
 ): (req: Request, res: Response, next: express.NextFunction) => void {
@@ -108,6 +118,13 @@ export function createRuntimeRouter(deps: {
       throw new HttpError(400, "Invalid runtime command payload", parsed.error.flatten());
     }
     const input = parsed.data as RuntimeCommandInput;
+    if (isObserverActor(input.issuedBy) && !OBSERVER_ALLOWED_COMMANDS.has(input.type)) {
+      throw new HttpError(403, "Observer role is read-only for runtime controls", {
+        issuedBy: input.issuedBy,
+        attemptedType: input.type,
+        allowedTypes: Array.from(OBSERVER_ALLOWED_COMMANDS)
+      });
+    }
     const owner = input.commandId ?? randomUUID();
     const lease = await deps.leases.acquire(`runtime-command:${req.params.meetingId}`, owner, 5_000);
     await deps.events.append({
