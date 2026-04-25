@@ -51,6 +51,7 @@ const envSchema = z.object({
   // operator generates a secret. Issuance routes refuse to start without it.
   JOIN_TOKEN_SECRET: z.string().min(32).optional(),
   JOIN_TOKEN_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  OBSERVER_SESSION_TICKET_TTL_MS: z.coerce.number().int().positive().default(120_000),
   JOIN_TOKEN_FRONTEND_BASE_URL: z.string().url().default("http://localhost:3000"),
   JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100),
   // Avatar service (RunPod H200 pod, see avatarservicenullxes)

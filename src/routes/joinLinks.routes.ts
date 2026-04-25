@@ -15,6 +15,11 @@ import {
   type JoinTokenRole
 } from "../services/joinTokenSigner";
 import type { JoinTokenStore } from "../services/joinTokenStore";
+import {
+  ObserverSessionTicketError,
+  ObserverSessionTicketSigner
+} from "../services/observerSessionTicketSigner";
+import type { ObserverSessionTicketStore } from "../services/observerSessionTicketStore";
 
 const issueSchema = z.object({
   ttlMs: z.number().int().positive().max(7 * 24 * 60 * 60 * 1000).optional(),
@@ -52,6 +57,9 @@ function parseJobAiId(raw: string): number {
 interface JoinLinksDeps {
   signer: JoinTokenSigner;
   store: JoinTokenStore;
+  observerTicketSigner: ObserverSessionTicketSigner;
+  observerTicketStore: ObserverSessionTicketStore;
+  resolveMeetingIdByInterview(jobAiId: number): Promise<string | null>;
 }
 
 function buildIssueHandler(role: JoinTokenRole, deps: JoinLinksDeps) {
@@ -184,6 +192,113 @@ export function createJoinPublicRouter(deps: JoinLinksDeps): express.Router {
 
   router.get("/candidate/:token", joinLinksResolveLimiter, handler("candidate"));
   router.get("/spectator/:token", joinLinksResolveLimiter, handler("spectator"));
+
+  /**
+   * Issue short-lived observer session ticket bound to active meeting.
+   * POST /join/spectator/:token/session-ticket
+   */
+  router.post(
+    "/spectator/:token/session-ticket",
+    joinLinksResolveLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const token = req.params.token;
+      let claims;
+      try {
+        claims = deps.signer.verify(token);
+      } catch (err) {
+        if (err instanceof JoinTokenError) {
+          if (err.detail.kind === "expired") {
+            res.status(410).json({ error: "expired", expiredAt: err.detail.expiredAtMs });
+            return;
+          }
+          res.status(401).json({ error: "invalid_token", reason: err.detail.kind });
+          return;
+        }
+        throw err;
+      }
+      if (claims.role !== "spectator") {
+        res.status(401).json({ error: "invalid_token", reason: "role_mismatch" });
+        return;
+      }
+      if (await deps.store.isRevoked(claims.jti)) {
+        res.status(410).json({ error: "revoked" });
+        return;
+      }
+
+      const meetingId = await deps.resolveMeetingIdByInterview(claims.jobAiId);
+      if (!meetingId) {
+        res.status(409).json({ error: "meeting_not_active" });
+        return;
+      }
+
+      const now = Date.now();
+      const exp = now + env.OBSERVER_SESSION_TICKET_TTL_MS;
+      const jti = randomUUID();
+      const observerTicket = deps.observerTicketSigner.sign({
+        jobAiId: claims.jobAiId,
+        role: "spectator",
+        meetingId,
+        jti,
+        iat: now,
+        exp
+      });
+
+      res.status(201).json({
+        observerTicket,
+        meetingId,
+        jobAiId: claims.jobAiId,
+        expiresAt: exp
+      });
+    })
+  );
+
+  /**
+   * One-time consume + verify observer session ticket.
+   * POST /join/spectator/session-ticket/consume
+   * body: { observerTicket: string }
+   */
+  router.post(
+    "/spectator/session-ticket/consume",
+    joinLinksResolveLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const observerTicket =
+        req.body && typeof req.body === "object" && typeof req.body.observerTicket === "string"
+          ? req.body.observerTicket.trim()
+          : "";
+      if (!observerTicket) {
+        throw new HttpError(400, "observerTicket is required");
+      }
+
+      let claims;
+      try {
+        claims = deps.observerTicketSigner.verify(observerTicket);
+      } catch (err) {
+        if (err instanceof ObserverSessionTicketError) {
+          if (err.detail.kind === "expired") {
+            res.status(410).json({ error: "observer_ticket_expired", expiredAt: err.detail.expiredAtMs });
+            return;
+          }
+          res.status(401).json({ error: "observer_ticket_invalid", reason: err.detail.kind });
+          return;
+        }
+        throw err;
+      }
+
+      const consumed = await deps.observerTicketStore.consumeOnce(claims.jti, claims.exp);
+      if (!consumed) {
+        res.status(409).json({ error: "observer_ticket_consumed" });
+        return;
+      }
+
+      res.status(200).json({
+        jobAiId: claims.jobAiId,
+        meetingId: claims.meetingId,
+        role: claims.role,
+        jti: claims.jti,
+        expiresAt: claims.exp
+      });
+    })
+  );
 
   return router;
 }

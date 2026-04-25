@@ -30,6 +30,11 @@ import { StreamProvisioner } from "./services/streamProvisioner";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
 import { JoinTokenSigner } from "./services/joinTokenSigner";
+import {
+  InMemoryObserverSessionTicketStore,
+  RedisObserverSessionTicketStore
+} from "./services/observerSessionTicketStore";
+import { ObserverSessionTicketSigner } from "./services/observerSessionTicketSigner";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
@@ -225,7 +230,27 @@ export async function createApp(): Promise<AppContext> {
   // joinLinks routes only register /links/* sub-paths).
   if (env.JOIN_TOKEN_SECRET) {
     const joinTokenSigner = new JoinTokenSigner(env.JOIN_TOKEN_SECRET);
-    const joinLinksDeps = { signer: joinTokenSigner, store: storage.joinTokenStore };
+    const observerTicketSigner = new ObserverSessionTicketSigner(env.JOIN_TOKEN_SECRET);
+    const observerTicketStore = storage.redis
+      ? new RedisObserverSessionTicketStore({
+          redis: storage.redis,
+          prefix: env.REDIS_PREFIX
+        })
+      : new InMemoryObserverSessionTicketStore();
+    const joinLinksDeps = {
+      signer: joinTokenSigner,
+      store: storage.joinTokenStore,
+      observerTicketSigner,
+      observerTicketStore,
+      resolveMeetingIdByInterview: async (jobAiId: number) => {
+        try {
+          const snapshot = await runtimeSnapshots.getByInterviewId(jobAiId);
+          return snapshot.meetingId;
+        } catch {
+          return null;
+        }
+      }
+    };
     app.use("/interviews", createJoinLinksIssueRouter(joinLinksDeps));
     app.use("/join", createJoinPublicRouter(joinLinksDeps));
     logger.info({ frontendBaseUrl: env.JOIN_TOKEN_FRONTEND_BASE_URL }, "join links routes enabled");
