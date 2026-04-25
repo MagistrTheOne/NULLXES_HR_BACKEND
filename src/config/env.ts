@@ -12,7 +12,7 @@ const envSchema = z.object({
   // Realtime built-in voices per OpenAI docs include:
   // alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar.
   // Default to a feminine sounding voice for HR interviewer tone.
-  OPENAI_REALTIME_VOICE: z.string().default("shimmer"),
+  OPENAI_REALTIME_VOICE: z.string().default("coral"),
   OPENAI_TURN_DETECTION_ENABLED: z.coerce.boolean().default(false),
   OPENAI_TURN_DETECTION_TYPE: z.enum(["server_vad"]).default("server_vad"),
   OPENAI_TURN_DETECTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
