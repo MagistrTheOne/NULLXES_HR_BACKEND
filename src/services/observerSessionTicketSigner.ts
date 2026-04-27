@@ -4,6 +4,8 @@ export interface ObserverSessionTicketClaims {
   jobAiId: number;
   meetingId: string;
   role: "spectator";
+  /** Stable spectator identity key (derived from join-link jti). */
+  viewerKey?: string;
   jti: string;
   iat: number;
   exp: number;
@@ -101,6 +103,7 @@ export class ObserverSessionTicketSigner {
     const jobAiId = payload.jobAiId;
     const meetingId = payload.meetingId;
     const role = payload.role;
+    const viewerKey = payload.viewerKey;
     const jti = payload.jti;
     const iat = payload.iat;
     const exp = payload.exp;
@@ -114,6 +117,9 @@ export class ObserverSessionTicketSigner {
     if (role !== "spectator") {
       throw new ObserverSessionTicketError({ kind: "malformed", reason: "invalid_role" });
     }
+    if (viewerKey !== undefined && (typeof viewerKey !== "string" || viewerKey.length === 0)) {
+      throw new ObserverSessionTicketError({ kind: "malformed", reason: "invalid_viewerKey" });
+    }
     if (typeof jti !== "string" || jti.length === 0) {
       throw new ObserverSessionTicketError({ kind: "malformed", reason: "invalid_jti" });
     }
@@ -123,7 +129,7 @@ export class ObserverSessionTicketSigner {
     if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= iat) {
       throw new ObserverSessionTicketError({ kind: "malformed", reason: "invalid_exp" });
     }
-    return { jobAiId, meetingId, role, jti, iat, exp };
+    return { jobAiId, meetingId, role, ...(typeof viewerKey === "string" ? { viewerKey } : {}), jti, iat, exp };
   }
 }
 

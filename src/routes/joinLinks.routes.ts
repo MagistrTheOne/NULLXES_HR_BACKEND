@@ -238,6 +238,8 @@ export function createJoinPublicRouter(deps: JoinLinksDeps): express.Router {
         jobAiId: claims.jobAiId,
         role: "spectator",
         meetingId,
+        // Keep observer identity stable across ticket refreshes for the same join-link.
+        viewerKey: claims.jti,
         jti,
         iat: now,
         exp
@@ -294,6 +296,7 @@ export function createJoinPublicRouter(deps: JoinLinksDeps): express.Router {
         jobAiId: claims.jobAiId,
         meetingId: claims.meetingId,
         role: claims.role,
+        ...(claims.viewerKey ? { viewerKey: claims.viewerKey } : {}),
         jti: claims.jti,
         expiresAt: claims.exp
       });
