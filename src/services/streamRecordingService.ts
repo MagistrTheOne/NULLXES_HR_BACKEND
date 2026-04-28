@@ -30,6 +30,18 @@ export type StreamRecordingSnapshot = {
   providerRaw?: Record<string, unknown>;
 };
 
+export class StreamRecordingStateError extends Error {
+  readonly code: "not_recording" | "already_recording" | "processing" | "not_found";
+  readonly status: number;
+
+  constructor(code: StreamRecordingStateError["code"], status: number, message: string) {
+    super(message);
+    this.name = "StreamRecordingStateError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export interface StreamRecordingServiceInput {
   apiKey: string;
   apiSecret: string;
@@ -88,12 +100,32 @@ export class StreamRecordingService {
   }
 
   async start(callId: string): Promise<StreamRecordingSnapshot> {
-    await this.adminRequest("POST", `/api/v2/video/call/${encodeURIComponent(this.callType)}/${encodeURIComponent(callId)}/start_recording`);
+    try {
+      await this.adminRequest("POST", `/api/v2/video/call/${encodeURIComponent(this.callType)}/${encodeURIComponent(callId)}/start_recording`);
+    } catch (error) {
+      if (
+        error instanceof StreamRecordingStateError &&
+        (error.code === "already_recording" || error.code === "processing")
+      ) {
+        return this.getSnapshot(callId);
+      }
+      throw error;
+    }
     return this.getSnapshot(callId);
   }
 
   async stop(callId: string): Promise<StreamRecordingSnapshot> {
-    await this.adminRequest("POST", `/api/v2/video/call/${encodeURIComponent(this.callType)}/${encodeURIComponent(callId)}/stop_recording`);
+    try {
+      await this.adminRequest("POST", `/api/v2/video/call/${encodeURIComponent(this.callType)}/${encodeURIComponent(callId)}/stop_recording`);
+    } catch (error) {
+      if (
+        error instanceof StreamRecordingStateError &&
+        (error.code === "not_recording" || error.code === "processing")
+      ) {
+        return this.getSnapshot(callId);
+      }
+      throw error;
+    }
     return this.getSnapshot(callId);
   }
 
@@ -153,6 +185,23 @@ export class StreamRecordingService {
     return "idle";
   }
 
+  private classifyError(status: number, body: string): StreamRecordingStateError | null {
+    const text = body.toLowerCase();
+    if (status === 404) {
+      return new StreamRecordingStateError("not_found", status, "Stream call not found");
+    }
+    if (text.includes("already recording") || text.includes("recording already in progress")) {
+      return new StreamRecordingStateError("already_recording", status, "Recording already started");
+    }
+    if (text.includes("not recording") || text.includes("no active recording")) {
+      return new StreamRecordingStateError("not_recording", status, "Recording is not active");
+    }
+    if (text.includes("processing") || text.includes("not ready") || text.includes("egress")) {
+      return new StreamRecordingStateError("processing", status, "Recording is being processed");
+    }
+    return null;
+  }
+
   private async adminRequest(method: "GET" | "POST", path: string): Promise<unknown> {
     const adminToken = mintStreamAdminToken({ apiSecret: this.apiSecret });
     const controller = new AbortController();
@@ -170,6 +219,10 @@ export class StreamRecordingService {
       });
       const text = await response.text();
       if (!response.ok) {
+        const classified = this.classifyError(response.status, text);
+        if (classified) {
+          throw classified;
+        }
         throw new Error(`Stream recording request failed: ${response.status} ${text.slice(0, 240)}`);
       }
       if (!text.trim()) {

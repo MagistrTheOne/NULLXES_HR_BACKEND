@@ -4,7 +4,7 @@ import { HttpError } from "../middleware/errorHandler";
 import { logger } from "../logging/logger";
 import { MeetingOrchestrator } from "../services/meetingOrchestrator";
 import type { InterviewSyncService } from "../services/interviewSyncService";
-import type { StreamRecordingService } from "../services/streamRecordingService";
+import { StreamRecordingStateError, type StreamRecordingService } from "../services/streamRecordingService";
 import type { FailMeetingInput, StartMeetingInput, StopMeetingInput } from "../types/meeting";
 
 const startMeetingSchema = z.object({
@@ -280,7 +280,14 @@ export function createMeetingRouter(
     const snapshot = await deps.recordings.getSnapshot(callId);
     const asset = snapshot.assets.find((item) => typeof item.url === "string" && item.url.length > 0);
     if (!asset?.url) {
-      throw new HttpError(404, "Recording download is not ready");
+      res.status(202).json({
+        state: snapshot.state,
+        callType: snapshot.callType,
+        callId: snapshot.callId,
+        ready: false,
+        message: "Recording is processing. Retry download shortly."
+      });
+      return;
     }
     res.status(200).json({
       state: snapshot.state,
@@ -328,6 +335,24 @@ export function createMeetingRouter(
       snapshot
     });
   }));
+
+  router.use(((error: unknown, _req: Request, _res: Response, next: express.NextFunction) => {
+    if (error instanceof StreamRecordingStateError) {
+      if (error.code === "processing") {
+        next(new HttpError(202, error.message, { code: error.code }));
+        return;
+      }
+      if (error.code === "not_recording" || error.code === "already_recording") {
+        next(new HttpError(409, error.message, { code: error.code }));
+        return;
+      }
+      if (error.code === "not_found") {
+        next(new HttpError(404, error.message, { code: error.code }));
+        return;
+      }
+    }
+    next(error);
+  }) as express.ErrorRequestHandler);
 
   return router;
 }
