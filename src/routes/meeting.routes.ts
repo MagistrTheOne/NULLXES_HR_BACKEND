@@ -213,6 +213,15 @@ export function createMeetingRouter(
     }
 
     const snapshot = await deps.recordings.getSnapshot(callId);
+    const withUrl = snapshot.assets.find((item) => typeof item.url === "string" && item.url.length > 0);
+    orchestrator.updateRecordingMetadata(meetingId, {
+      stream_call_id: snapshot.callId,
+      stream_call_type: callType ?? snapshot.callType,
+      stream_recording_state: snapshot.state,
+      stream_recording_id: snapshot.activeRecordingId,
+      stream_recording_url: withUrl?.url,
+      stream_recording_filename: withUrl?.filename
+    });
     res.status(200).json({
       configured: true,
       ...snapshot,
@@ -229,6 +238,12 @@ export function createMeetingRouter(
       throw new HttpError(503, "Stream recording is not configured");
     }
     const snapshot = await deps.recordings.start(callId);
+    orchestrator.updateRecordingMetadata(meetingId, {
+      stream_call_id: snapshot.callId,
+      stream_call_type: input.callType ?? snapshot.callType,
+      stream_recording_state: snapshot.state,
+      stream_recording_id: snapshot.activeRecordingId
+    });
     res.status(202).json({ configured: true, ...snapshot, callType: input.callType ?? snapshot.callType });
   }));
 
@@ -241,6 +256,15 @@ export function createMeetingRouter(
       throw new HttpError(503, "Stream recording is not configured");
     }
     const snapshot = await deps.recordings.stop(callId);
+    const withUrl = snapshot.assets.find((item) => typeof item.url === "string" && item.url.length > 0);
+    orchestrator.updateRecordingMetadata(meetingId, {
+      stream_call_id: snapshot.callId,
+      stream_call_type: input.callType ?? snapshot.callType,
+      stream_recording_state: snapshot.state,
+      stream_recording_id: snapshot.activeRecordingId,
+      stream_recording_url: withUrl?.url,
+      stream_recording_filename: withUrl?.filename
+    });
     res.status(202).json({ configured: true, ...snapshot, callType: input.callType ?? snapshot.callType });
   }));
 

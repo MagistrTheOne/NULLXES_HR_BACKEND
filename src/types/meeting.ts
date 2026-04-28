@@ -73,6 +73,7 @@ export interface MeetingStatusWebhookPayload {
   eventType: "meeting.status.changed";
   schemaVersion: string;
   internalMeetingId: string;
+  meeting_id?: string;
   sessionId?: string;
   fromStatus: MeetingStatus | null;
   status: MeetingStatus;

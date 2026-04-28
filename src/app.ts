@@ -112,7 +112,8 @@ export async function createApp(): Promise<AppContext> {
           streamCallType: env.STREAM_CALL_TYPE
         }
       : undefined,
-    runtimeEvents
+    runtimeEvents,
+    streamRecordingService
   );
   const runtimeSnapshots = new RuntimeSnapshotService({
     meetingStore,

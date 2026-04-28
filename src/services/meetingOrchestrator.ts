@@ -24,6 +24,7 @@ import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
+import type { StreamRecordingService } from "./streamRecordingService";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -43,7 +44,8 @@ export class MeetingOrchestrator {
     private readonly webhookOutbox: WebhookOutbox,
     private readonly postMeetingProcessor: PostMeetingProcessor,
     private readonly avatar?: MeetingOrchestratorAvatarDeps,
-    private readonly runtimeEvents?: RuntimeEventStore
+    private readonly runtimeEvents?: RuntimeEventStore,
+    private readonly streamRecording?: StreamRecordingService
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -61,11 +63,40 @@ export class MeetingOrchestrator {
     // post back to /avatar/events when it is ready, and the frontend polls
     // /avatar/state/:meetingId to know when to render the live tile.
     this.kickoffAvatar(meeting, input);
+    this.kickoffRecording(meeting.meetingId);
 
     return {
       meeting,
       history: this.store.getMeetingHistory(meeting.meetingId)
     };
+  }
+
+  private kickoffRecording(meetingId: string): void {
+    if (!this.streamRecording || !this.streamRecording.isConfigured()) {
+      return;
+    }
+    void this.streamRecording
+      .start(meetingId)
+      .then((snapshot) => {
+        this.updateRecordingMetadata(meetingId, {
+          stream_recording_state: snapshot.state,
+          stream_call_id: snapshot.callId,
+          stream_call_type: snapshot.callType,
+          stream_recording_id: snapshot.activeRecordingId
+        });
+        logger.info(
+          { meetingId, state: snapshot.state, recordingId: snapshot.activeRecordingId },
+          "stream recording auto-start attempted"
+        );
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.updateRecordingMetadata(meetingId, {
+          stream_recording_state: "failed",
+          stream_recording_error: message
+        });
+        logger.warn({ meetingId, error: message }, "stream recording auto-start failed");
+      });
   }
 
   private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
@@ -173,8 +204,27 @@ export class MeetingOrchestrator {
     if (finalStatus === "completed") {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
+    this.stopRecording(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
+  }
+
+  private stopRecording(meetingId: string): void {
+    if (!this.streamRecording || !this.streamRecording.isConfigured()) {
+      return;
+    }
+    void this.streamRecording
+      .stop(meetingId)
+      .then((snapshot) => {
+        const firstAssetWithUrl = snapshot.assets.find((item) => typeof item.url === "string" && item.url.length > 0);
+        this.updateRecordingMetadata(meetingId, {
+          stream_recording_state: snapshot.state,
+          stream_recording_id: snapshot.activeRecordingId,
+          stream_recording_url: firstAssetWithUrl?.url,
+          stream_recording_filename: firstAssetWithUrl?.filename
+        });
+      })
+      .catch(() => undefined);
   }
 
   private teardownAvatar(meetingId: string): void {
@@ -240,6 +290,16 @@ export class MeetingOrchestrator {
   getMeeting(meetingId: string): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
     const meeting = this.requireMeeting(meetingId);
     return { meeting, history: this.store.getMeetingHistory(meetingId) };
+  }
+
+  updateRecordingMetadata(meetingId: string, patch: Record<string, unknown>): void {
+    const meeting = this.requireMeeting(meetingId);
+    meeting.metadata = { ...(meeting.metadata ?? {}), ...patch };
+    meeting.updatedAt = Date.now();
+    const maybePersist = this.store as unknown as { persistMeeting?: (id: string) => Promise<void> };
+    if (typeof maybePersist.persistMeeting === "function") {
+      void maybePersist.persistMeeting(meetingId);
+    }
   }
 
   listMeetings(): MeetingRecord[] {
@@ -394,17 +454,24 @@ export class MeetingOrchestrator {
 
   private enqueueStatusWebhook(transition: MeetingTransitionEvent): void {
     const terminal = transition.toStatus === "completed" || transition.toStatus === "stopped_during_meeting";
+    const meeting = this.requireMeeting(transition.meetingId);
+    const meetingMetadata = meeting.metadata ?? {};
     const enrichedMetadata: Record<string, unknown> = {
+      ...meetingMetadata,
       ...(transition.metadata ?? {})
     };
     if (terminal) {
       enrichedMetadata.stream_call_id = transition.meetingId;
       enrichedMetadata.stream_call_type = env.STREAM_CALL_TYPE;
+      if (typeof meetingMetadata.stream_recording_id === "string" && meetingMetadata.stream_recording_id.trim().length > 0) {
+        enrichedMetadata.stream_recording_id = meetingMetadata.stream_recording_id;
+      }
     }
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
       internalMeetingId: transition.meetingId,
+      meeting_id: transition.meetingId,
       sessionId: transition.sessionId,
       fromStatus: transition.fromStatus,
       status: transition.toStatus,
