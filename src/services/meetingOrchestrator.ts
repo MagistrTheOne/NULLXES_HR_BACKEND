@@ -393,6 +393,14 @@ export class MeetingOrchestrator {
   }
 
   private enqueueStatusWebhook(transition: MeetingTransitionEvent): void {
+    const terminal = transition.toStatus === "completed" || transition.toStatus === "stopped_during_meeting";
+    const enrichedMetadata: Record<string, unknown> = {
+      ...(transition.metadata ?? {})
+    };
+    if (terminal) {
+      enrichedMetadata.stream_call_id = transition.meetingId;
+      enrichedMetadata.stream_call_type = env.STREAM_CALL_TYPE;
+    }
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
@@ -402,7 +410,7 @@ export class MeetingOrchestrator {
       status: transition.toStatus,
       reason: transition.reason,
       timestampMs: transition.timestampMs,
-      metadata: transition.metadata
+      metadata: Object.keys(enrichedMetadata).length > 0 ? enrichedMetadata : undefined
     };
     const idempotencyKey = this.buildIdempotencyKey(payload);
     this.webhookOutbox.enqueue(payload, idempotencyKey);
