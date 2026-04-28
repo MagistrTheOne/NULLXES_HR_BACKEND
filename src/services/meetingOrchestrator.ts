@@ -24,7 +24,7 @@ import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
-import type { StreamRecordingService } from "./streamRecordingService";
+import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -75,28 +75,48 @@ export class MeetingOrchestrator {
     if (!this.streamRecording || !this.streamRecording.isConfigured()) {
       return;
     }
-    void this.streamRecording
-      .start(meetingId)
-      .then((snapshot) => {
-        this.updateRecordingMetadata(meetingId, {
-          stream_recording_state: snapshot.state,
-          stream_call_id: snapshot.callId,
-          stream_call_type: snapshot.callType,
-          stream_recording_id: snapshot.activeRecordingId
-        });
-        logger.info(
-          { meetingId, state: snapshot.state, recordingId: snapshot.activeRecordingId },
-          "stream recording auto-start attempted"
-        );
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.updateRecordingMetadata(meetingId, {
-          stream_recording_state: "failed",
-          stream_recording_error: message
-        });
-        logger.warn({ meetingId, error: message }, "stream recording auto-start failed");
-      });
+    const tryStart = async (): Promise<void> => {
+      const maxAttempts = 12;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const snapshot = await this.streamRecording!.start(meetingId);
+          this.updateRecordingMetadata(meetingId, {
+            stream_recording_state: snapshot.state,
+            stream_call_id: snapshot.callId,
+            stream_call_type: snapshot.callType,
+            stream_recording_id: snapshot.activeRecordingId
+          });
+          this.enqueueRecordingSignal(meetingId, "recording_auto_started", {
+            stream_recording_state: snapshot.state,
+            stream_call_id: snapshot.callId,
+            stream_call_type: snapshot.callType,
+            stream_recording_id: snapshot.activeRecordingId
+          });
+          logger.info(
+            { meetingId, state: snapshot.state, recordingId: snapshot.activeRecordingId, attempt },
+            "stream recording auto-start attempted"
+          );
+          return;
+        } catch (error) {
+          const retryable =
+            error instanceof StreamRecordingStateError &&
+            (error.code === "not_found" || error.code === "processing");
+          if (retryable && attempt < maxAttempts) {
+            // Stream call может появиться с задержкой после создания meeting.
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+            continue;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          this.updateRecordingMetadata(meetingId, {
+            stream_recording_state: "failed",
+            stream_recording_error: message
+          });
+          logger.warn({ meetingId, error: message, attempt }, "stream recording auto-start failed");
+          return;
+        }
+      }
+    };
+    void tryStart();
   }
 
   private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
@@ -478,6 +498,24 @@ export class MeetingOrchestrator {
       reason: transition.reason,
       timestampMs: transition.timestampMs,
       metadata: Object.keys(enrichedMetadata).length > 0 ? enrichedMetadata : undefined
+    };
+    const idempotencyKey = this.buildIdempotencyKey(payload);
+    this.webhookOutbox.enqueue(payload, idempotencyKey);
+  }
+
+  private enqueueRecordingSignal(meetingId: string, reason: string, metadata: Record<string, unknown>): void {
+    const meeting = this.requireMeeting(meetingId);
+    const payload: MeetingWebhookEvent = {
+      eventType: "meeting.status.changed",
+      schemaVersion: "1.0",
+      internalMeetingId: meetingId,
+      meeting_id: meetingId,
+      sessionId: meeting.sessionId,
+      fromStatus: meeting.status,
+      status: meeting.status,
+      reason,
+      timestampMs: Date.now(),
+      metadata
     };
     const idempotencyKey = this.buildIdempotencyKey(payload);
     this.webhookOutbox.enqueue(payload, idempotencyKey);
