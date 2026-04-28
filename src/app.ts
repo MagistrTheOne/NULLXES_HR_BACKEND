@@ -27,6 +27,7 @@ import { createRuntimeRouter } from "./routes/runtime.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
 import { StreamProvisioner } from "./services/streamProvisioner";
+import { StreamRecordingService } from "./services/streamRecordingService";
 import { InterviewSyncService } from "./services/interviewSyncService";
 import { JobAiClient } from "./services/jobaiClient";
 import { JoinTokenSigner } from "./services/joinTokenSigner";
@@ -86,6 +87,15 @@ export async function createApp(): Promise<AppContext> {
       ? new StreamProvisioner({
           apiKey: env.STREAM_API_KEY,
           apiSecret: env.STREAM_API_SECRET,
+          baseUrl: env.STREAM_BASE_URL
+        })
+      : undefined;
+  const streamRecordingService =
+    env.STREAM_API_KEY && env.STREAM_API_SECRET
+      ? new StreamRecordingService({
+          apiKey: env.STREAM_API_KEY,
+          apiSecret: env.STREAM_API_SECRET,
+          callType: env.STREAM_CALL_TYPE,
           baseUrl: env.STREAM_BASE_URL
         })
       : undefined;
@@ -221,7 +231,10 @@ export async function createApp(): Promise<AppContext> {
       }
       next();
     },
-    createMeetingRouter(meetingOrchestrator)
+    createMeetingRouter(meetingOrchestrator, {
+      recordings: streamRecordingService,
+      interviews: interviewService
+    })
   );
 
   // M3: signed join links (mounted before generic interviews router so that

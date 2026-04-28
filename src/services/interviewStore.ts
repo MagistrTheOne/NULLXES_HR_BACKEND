@@ -143,6 +143,19 @@ export class InMemoryInterviewStore {
     return existing;
   }
 
+  setRecordingProjection(
+    jobAiId: number,
+    recording: NonNullable<InterviewProjection["recording"]>
+  ): StoredInterview {
+    const existing = this.byJobAiId.get(jobAiId);
+    if (!existing) {
+      throw new Error(`Interview not found: ${jobAiId}`);
+    }
+    existing.projection.recording = recording;
+    existing.projection.updatedAt = new Date().toISOString();
+    return existing;
+  }
+
   setSyncState(result: { status: "success" | "error"; error?: string }): void {
     this.lastSyncAt = new Date().toISOString();
     this.lastSyncResult = result.status;

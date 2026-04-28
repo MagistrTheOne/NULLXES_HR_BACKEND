@@ -3,6 +3,8 @@ import { z } from "zod";
 import { HttpError } from "../middleware/errorHandler";
 import { logger } from "../logging/logger";
 import { MeetingOrchestrator } from "../services/meetingOrchestrator";
+import type { InterviewSyncService } from "../services/interviewSyncService";
+import type { StreamRecordingService } from "../services/streamRecordingService";
 import type { FailMeetingInput, StartMeetingInput, StopMeetingInput } from "../types/meeting";
 
 const startMeetingSchema = z.object({
@@ -52,6 +54,17 @@ const admissionDecisionSchema = z.object({
   decidedBy: z.string().min(1).max(120).optional()
 });
 
+const recordingStartSchema = z.object({
+  callType: z.string().min(1).optional(),
+  callId: z.string().min(1).optional()
+});
+
+const recordingSyncSchema = z.object({
+  jobAiId: z.number().int().positive(),
+  callType: z.string().min(1).optional(),
+  callId: z.string().min(1).optional()
+});
+
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
 ): (req: Request, res: Response, next: express.NextFunction) => void {
@@ -68,7 +81,13 @@ function parseBody<T>(schema: z.ZodSchema<T>, body: unknown): T {
   return parsed.data;
 }
 
-export function createMeetingRouter(orchestrator: MeetingOrchestrator): express.Router {
+export function createMeetingRouter(
+  orchestrator: MeetingOrchestrator,
+  deps?: {
+    recordings?: StreamRecordingService;
+    interviews?: InterviewSyncService;
+  }
+): express.Router {
   const router = express.Router();
 
   router.post("/start", asyncHandler(async (req: Request, res: Response) => {
@@ -172,6 +191,119 @@ export function createMeetingRouter(orchestrator: MeetingOrchestrator): express.
       canCurrentParticipantRejoin: result.status.canCurrentParticipantRejoin
     });
   });
+
+  router.get("/:meetingId/recording", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const callType = typeof req.query.callType === "string" && req.query.callType.trim().length > 0
+      ? req.query.callType.trim()
+      : undefined;
+    const callId = typeof req.query.callId === "string" && req.query.callId.trim().length > 0
+      ? req.query.callId.trim()
+      : meetingId;
+
+    if (!deps?.recordings || !deps.recordings.isConfigured()) {
+      res.status(200).json({
+        configured: false,
+        state: "idle",
+        callType: callType ?? "default",
+        callId
+      });
+      return;
+    }
+
+    const snapshot = await deps.recordings.getSnapshot(callId);
+    res.status(200).json({
+      configured: true,
+      ...snapshot,
+      callType: callType ?? snapshot.callType
+    });
+  }));
+
+  router.post("/:meetingId/recording/start", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const input = parseBody(recordingStartSchema, req.body ?? {});
+    const callId = input.callId ?? meetingId;
+    if (!deps?.recordings || !deps.recordings.isConfigured()) {
+      throw new HttpError(503, "Stream recording is not configured");
+    }
+    const snapshot = await deps.recordings.start(callId);
+    res.status(202).json({ configured: true, ...snapshot, callType: input.callType ?? snapshot.callType });
+  }));
+
+  router.post("/:meetingId/recording/stop", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const input = parseBody(recordingStartSchema, req.body ?? {});
+    const callId = input.callId ?? meetingId;
+    if (!deps?.recordings || !deps.recordings.isConfigured()) {
+      throw new HttpError(503, "Stream recording is not configured");
+    }
+    const snapshot = await deps.recordings.stop(callId);
+    res.status(202).json({ configured: true, ...snapshot, callType: input.callType ?? snapshot.callType });
+  }));
+
+  router.get("/:meetingId/recording/download", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const callId = typeof req.query.callId === "string" && req.query.callId.trim().length > 0
+      ? req.query.callId.trim()
+      : meetingId;
+    if (!deps?.recordings || !deps.recordings.isConfigured()) {
+      throw new HttpError(503, "Stream recording is not configured");
+    }
+    const snapshot = await deps.recordings.getSnapshot(callId);
+    const asset = snapshot.assets.find((item) => typeof item.url === "string" && item.url.length > 0);
+    if (!asset?.url) {
+      throw new HttpError(404, "Recording download is not ready");
+    }
+    res.status(200).json({
+      state: snapshot.state,
+      callType: snapshot.callType,
+      callId: snapshot.callId,
+      asset
+    });
+  }));
+
+  router.post("/:meetingId/recording/sync-jobai", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const input = parseBody(recordingSyncSchema, req.body ?? {});
+    const callId = input.callId ?? meetingId;
+    if (!deps?.recordings || !deps.recordings.isConfigured()) {
+      throw new HttpError(503, "Stream recording is not configured");
+    }
+    if (!deps.interviews) {
+      throw new HttpError(503, "Interview sync service is not configured");
+    }
+    const snapshot = await deps.recordings.getSnapshot(callId);
+    const latest = snapshot.assets.find((asset) => Boolean(asset.url));
+    const recording = deps.interviews.attachRecording(input.jobAiId, {
+      state: snapshot.state,
+      callType: input.callType ?? snapshot.callType,
+      callId: snapshot.callId,
+      activeRecordingId: snapshot.activeRecordingId,
+      latestDownloadUrl: latest?.url,
+      latestFilename: latest?.filename,
+      codec: latest?.codec,
+      container: latest?.container
+    });
+    logger.info(
+      {
+        meetingId,
+        jobAiId: input.jobAiId,
+        recordingState: snapshot.state,
+        callId: snapshot.callId
+      },
+      "jobai recording sync projected in interview store"
+    );
+    res.status(200).json({
+      ok: true,
+      projection: recording.projection.recording,
+      snapshot
+    });
+  }));
 
   return router;
 }

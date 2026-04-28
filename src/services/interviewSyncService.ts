@@ -141,6 +141,25 @@ export class InterviewSyncService {
     return this.store.setRuntimeSession(jobAiId, params);
   }
 
+  attachRecording(
+    jobAiId: number,
+    recording: {
+      state: "idle" | "starting" | "recording" | "stopping" | "stopped" | "ready" | "failed";
+      callType?: string;
+      callId?: string;
+      activeRecordingId?: string;
+      latestDownloadUrl?: string;
+      latestFilename?: string;
+      codec?: string;
+      container?: string;
+    }
+  ): StoredInterview {
+    return this.store.setRecordingProjection(jobAiId, {
+      ...recording,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
   /**
    * Прототип: сохранить ФИО кандидата в проекции gateway (raw JobAI не меняем).
    * Разбор «Фамилия Имя Отчество»: первая лексема → candidateLastName, остальное → candidateFirstName.

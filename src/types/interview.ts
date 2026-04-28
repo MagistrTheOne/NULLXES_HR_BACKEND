@@ -80,6 +80,17 @@ export interface InterviewProjection {
   spectatorEntryPath: string;
   nullxesBusinessKey: NullxesBusinessKey;
   nullxesBusinessLabel: string;
+  recording?: {
+    state: "idle" | "starting" | "recording" | "stopping" | "stopped" | "ready" | "failed";
+    callType?: string;
+    callId?: string;
+    activeRecordingId?: string;
+    latestDownloadUrl?: string;
+    latestFilename?: string;
+    codec?: string;
+    container?: string;
+    updatedAt: string;
+  };
   updatedAt: string;
 }
 
