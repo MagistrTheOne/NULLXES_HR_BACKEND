@@ -298,7 +298,7 @@ export async function createApp(): Promise<AppContext> {
       }
       next();
     },
-    createJobAiRouter(interviewService)
+    createJobAiRouter(interviewService, jobAiClient)
   );
 
   app.get("/ops/webhooks", (_req: Request, res: Response) => {

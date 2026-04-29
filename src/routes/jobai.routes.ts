@@ -2,6 +2,7 @@ import express, { type Request, type Response } from "express";
 import { env } from "../config/env";
 import { HttpError } from "../middleware/errorHandler";
 import { InterviewSyncService } from "../services/interviewSyncService";
+import { JobAiClient } from "../services/jobaiClient";
 
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
@@ -35,7 +36,28 @@ function assertIngestSecret(req: Request): void {
   }
 }
 
-export function createJobAiRouter(service: InterviewSyncService): express.Router {
+function normalizePromptPayload(payload: unknown): {
+  mainPrompt: string | null;
+  idkAnswers: string[];
+  greetingSpeech: string;
+  finalSpeech: string;
+  source: string;
+} {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const mainPrompt =
+    typeof record.mainPrompt === "string" && record.mainPrompt.trim().length > 0
+      ? record.mainPrompt.trim()
+      : null;
+  const idkAnswers = Array.isArray(record.idkAnswers)
+    ? record.idkAnswers.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
+    : [];
+  const greetingSpeech = typeof record.greetingSpeech === "string" ? record.greetingSpeech : "";
+  const finalSpeech = typeof record.finalSpeech === "string" ? record.finalSpeech : "";
+  const source = typeof record.source === "string" && record.source.trim().length > 0 ? record.source.trim() : "jobai_settings";
+  return { mainPrompt, idkAnswers, greetingSpeech, finalSpeech, source };
+}
+
+export function createJobAiRouter(service: InterviewSyncService, jobAiClient: JobAiClient): express.Router {
   const router = express.Router();
 
   router.post("/webhooks/jobai/interviews", asyncHandler(async (req: Request, res: Response) => {
@@ -55,6 +77,55 @@ export function createJobAiRouter(service: InterviewSyncService): express.Router
     const take = typeof req.body?.take === "number" ? req.body.take : 20;
     const result = await service.synchronize(skip, take);
     res.status(200).json(result);
+  }));
+
+  /**
+   * Prompt snapshot webhook for JobAI side.
+   * Security: same ingest secret contract as interview create/update webhook.
+   */
+  router.post("/webhooks/jobai/prompt/current", asyncHandler(async (req: Request, res: Response) => {
+    assertIngestSecret(req);
+
+    if (!jobAiClient.isConfigured()) {
+      res.status(200).json({
+        promptVersion: "gateway_fallback_v1",
+        source: "gateway_fallback",
+        hasOverridePrompt: false,
+        mainPrompt: null,
+        idkAnswers: [],
+        greetingSpeech: "",
+        finalSpeech: "",
+        note: "JobAI settings API is not configured; runtime prompt is composed inside frontend from interview context."
+      });
+      return;
+    }
+
+    try {
+      const payload = await jobAiClient.getSettings();
+      const normalized = normalizePromptPayload(payload);
+      res.status(200).json({
+        promptVersion: "jobai_hr_v3",
+        source: normalized.source,
+        hasOverridePrompt: Boolean(normalized.mainPrompt),
+        mainPrompt: normalized.mainPrompt,
+        idkAnswers: normalized.idkAnswers,
+        greetingSpeech: normalized.greetingSpeech,
+        finalSpeech: normalized.finalSpeech,
+        syncedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      res.status(200).json({
+        promptVersion: "gateway_fallback_v1",
+        source: "jobai_unavailable_fallback",
+        hasOverridePrompt: false,
+        mainPrompt: null,
+        idkAnswers: [],
+        greetingSpeech: "",
+        finalSpeech: "",
+        note: "JobAI settings endpoint is temporarily unavailable.",
+        error: error instanceof Error ? error.message : "unknown_error"
+      });
+    }
   }));
 
   return router;
