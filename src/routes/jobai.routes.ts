@@ -88,10 +88,16 @@ export function createJobAiRouter(service: InterviewSyncService, jobAiClient: Jo
 
     if (!jobAiClient.isConfigured()) {
       res.status(200).json({
+        primaryField: "mainPrompt",
         promptVersion: "gateway_fallback_v1",
         source: "gateway_fallback",
         hasOverridePrompt: false,
         mainPrompt: null,
+        legacyFields: {
+          idkAnswers: "compat",
+          greetingSpeech: "compat",
+          finalSpeech: "compat"
+        },
         idkAnswers: [],
         greetingSpeech: "",
         finalSpeech: "",
@@ -104,10 +110,16 @@ export function createJobAiRouter(service: InterviewSyncService, jobAiClient: Jo
       const payload = await jobAiClient.getSettings();
       const normalized = normalizePromptPayload(payload);
       res.status(200).json({
+        primaryField: "mainPrompt",
         promptVersion: "jobai_hr_v3",
         source: normalized.source,
         hasOverridePrompt: Boolean(normalized.mainPrompt),
         mainPrompt: normalized.mainPrompt,
+        legacyFields: {
+          idkAnswers: "compat",
+          greetingSpeech: "compat",
+          finalSpeech: "compat"
+        },
         idkAnswers: normalized.idkAnswers,
         greetingSpeech: normalized.greetingSpeech,
         finalSpeech: normalized.finalSpeech,
@@ -115,10 +127,16 @@ export function createJobAiRouter(service: InterviewSyncService, jobAiClient: Jo
       });
     } catch (error) {
       res.status(200).json({
+        primaryField: "mainPrompt",
         promptVersion: "gateway_fallback_v1",
         source: "jobai_unavailable_fallback",
         hasOverridePrompt: false,
         mainPrompt: null,
+        legacyFields: {
+          idkAnswers: "compat",
+          greetingSpeech: "compat",
+          finalSpeech: "compat"
+        },
         idkAnswers: [],
         greetingSpeech: "",
         finalSpeech: "",

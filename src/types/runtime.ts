@@ -13,6 +13,7 @@ export type RuntimeEventType =
   | "realtime.session.event"
   | "avatar.event"
   | "stream.token.issued"
+  | "observer_command_denied"
   | "runtime.lease.acquired"
   | "runtime.lease.rejected";
 

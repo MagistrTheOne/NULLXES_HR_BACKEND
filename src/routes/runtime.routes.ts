@@ -119,6 +119,16 @@ export function createRuntimeRouter(deps: {
     }
     const input = parsed.data as RuntimeCommandInput;
     if (isObserverActor(input.issuedBy) && !OBSERVER_ALLOWED_COMMANDS.has(input.type)) {
+      await deps.events.append({
+        type: "observer_command_denied",
+        meetingId: req.params.meetingId,
+        actor: input.issuedBy ?? "observer_ui",
+        payload: {
+          reason: "observer_readonly",
+          attemptedType: input.type,
+          allowedTypes: Array.from(OBSERVER_ALLOWED_COMMANDS)
+        }
+      }).catch(() => undefined);
       throw new HttpError(403, "Observer role is read-only for runtime controls", {
         issuedBy: input.issuedBy,
         attemptedType: input.type,
