@@ -1,0 +1,261 @@
+import { StreamClient } from "@stream-io/node-sdk";
+import type { RealtimeClient } from "@stream-io/openai-realtime-api";
+import { env } from "../config/env";
+import { logger } from "../logging/logger";
+import type { StreamProvisioner } from "./streamProvisioner";
+
+export type StreamOpenAiAgentState = "disabled" | "connecting" | "connected" | "failed" | "closed";
+
+export type ConnectStreamOpenAiAgentInput = {
+  meetingId: string;
+  sessionId: string;
+  jobAiId?: number | null;
+  callType: string;
+  callId: string;
+  agentUserId: string;
+  instructions: string;
+  voice?: string;
+  model?: string;
+};
+
+export type ConnectStreamOpenAiAgentResult = {
+  transport: "stream_openai";
+  agentUserId: string;
+  state: StreamOpenAiAgentState;
+  connectedAt?: number;
+  error?: string;
+};
+
+type ActiveAgentConnection = {
+  agentUserId: string;
+  callType: string;
+  callId: string;
+  connectedAt: number;
+  state: StreamOpenAiAgentState;
+  lastError?: string;
+  realtimeClient?: RealtimeClient;
+};
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function isEnabledByEnv(): boolean {
+  return Boolean(env.STREAM_OPENAI_AGENT_ENABLED || env.ENABLE_STREAM_OPENAI_AGENT);
+}
+
+function resolveModel(): string {
+  const explicit = env.STREAM_OPENAI_AGENT_MODEL?.trim();
+  return explicit && explicit.length > 0 ? explicit : env.OPENAI_REALTIME_MODEL;
+}
+
+function resolveVoice(): string {
+  const explicit = env.STREAM_OPENAI_AGENT_VOICE?.trim();
+  return explicit && explicit.length > 0 ? explicit : env.OPENAI_REALTIME_VOICE;
+}
+
+export interface StreamOpenAiAgentServiceInput {
+  apiKey: string;
+  apiSecret: string;
+  baseUrl?: string;
+  streamProvisioner?: StreamProvisioner;
+}
+
+/**
+ * Phase 1 service: connects a backend-owned OpenAI agent into a Stream call using
+ * Stream's OpenAI Realtime integration (`connectOpenAi`).
+ *
+ * IMPORTANT: Disabled by default. When enabled, frontend must be migrated in Phase 2
+ * to avoid double-agent (browser OpenAI voice + Stream agent voice).
+ */
+export class StreamOpenAiAgentService {
+  private readonly streamClient: StreamClient;
+  private readonly provisioner?: StreamProvisioner;
+  private readonly activeByMeetingId = new Map<string, ActiveAgentConnection>();
+
+  constructor(input: StreamOpenAiAgentServiceInput) {
+    this.streamClient = new StreamClient(input.apiKey, input.apiSecret, {
+      basePath: input.baseUrl
+    });
+    this.provisioner = input.streamProvisioner;
+  }
+
+  isEnabled(): boolean {
+    return isEnabledByEnv();
+  }
+
+  getActive(meetingId: string): ActiveAgentConnection | undefined {
+    return this.activeByMeetingId.get(meetingId);
+  }
+
+  async connectAgentToCall(input: ConnectStreamOpenAiAgentInput): Promise<ConnectStreamOpenAiAgentResult> {
+    if (!this.isEnabled()) {
+      return { transport: "stream_openai", agentUserId: input.agentUserId, state: "disabled" };
+    }
+
+    const existing = this.activeByMeetingId.get(input.meetingId);
+    if (existing?.state === "connected" && existing.agentUserId === input.agentUserId) {
+      return {
+        transport: "stream_openai",
+        agentUserId: existing.agentUserId,
+        state: existing.state,
+        connectedAt: existing.connectedAt
+      };
+    }
+
+    this.activeByMeetingId.set(input.meetingId, {
+      agentUserId: input.agentUserId,
+      callType: input.callType,
+      callId: input.callId,
+      connectedAt: Date.now(),
+      state: "connecting"
+    });
+
+    logger.warn(
+      {
+        meetingId: input.meetingId,
+        note: "Browser OpenAI Realtime must be disabled in Phase 2 to avoid double-agent."
+      },
+      "stream_openai_agent_enabled_requires_frontend_agent_mode"
+    );
+    // TODO(phase2): when NEXT_PUBLIC_STREAM_OPENAI_AGENT_MODE=1, frontend must not start browser speaking OpenAI Realtime session.
+
+    try {
+      if (this.provisioner) {
+        await this.provisioner.provisionAgentForCall({
+          callType: input.callType,
+          callId: input.callId,
+          agentUserId: input.agentUserId,
+          agentDisplayName: "HR ассистент",
+          candidateUserId: `candidate-${input.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
+          candidateDisplayName: "Candidate"
+        });
+      }
+
+      const call = this.streamClient.video.call(input.callType, input.callId);
+
+      logger.info(
+        {
+          meetingId: input.meetingId,
+          sessionId: input.sessionId,
+          jobAiId: input.jobAiId ?? null,
+          callType: input.callType,
+          callId: input.callId,
+          agentUserId: input.agentUserId,
+          model: input.model ?? resolveModel()
+        },
+        "stream openai agent connecting"
+      );
+
+      const realtimeClient = await withTimeout(
+        this.streamClient.video.connectOpenAi({
+          call,
+          agentUserId: input.agentUserId,
+          openAiApiKey: env.OPENAI_API_KEY,
+          model: (input.model ?? resolveModel()) as unknown as never,
+          validityInSeconds: env.STREAM_OPENAI_AGENT_VALIDITY_SECONDS
+        }),
+        env.STREAM_OPENAI_AGENT_CONNECT_TIMEOUT_MS,
+        "stream connectOpenAi"
+      );
+
+      // Best-effort updateSession (non-fatal)
+      try {
+        const maybeUpdateSession = (realtimeClient as unknown as { updateSession?: (v: unknown) => unknown })
+          .updateSession;
+        if (maybeUpdateSession) {
+          await maybeUpdateSession({
+            instructions: input.instructions,
+            voice: input.voice ?? resolveVoice()
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent updateSession failed");
+      }
+
+      // Best-effort event subscriptions (do not assume exact emitter API).
+      try {
+        const anyClient = realtimeClient as unknown as { on?: (event: string, cb: (...args: any[]) => void) => void };
+        if (typeof anyClient.on === "function") {
+          anyClient.on("error", (e: unknown) => {
+            const message = e instanceof Error ? e.message : String(e);
+            logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent runtime error");
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      const connectedAt = Date.now();
+      this.activeByMeetingId.set(input.meetingId, {
+        agentUserId: input.agentUserId,
+        callType: input.callType,
+        callId: input.callId,
+        connectedAt,
+        state: "connected",
+        realtimeClient
+      });
+
+      logger.info(
+        { meetingId: input.meetingId, callType: input.callType, callId: input.callId, agentUserId: input.agentUserId },
+        "stream openai agent connected"
+      );
+      return {
+        transport: "stream_openai",
+        agentUserId: input.agentUserId,
+        state: "connected",
+        connectedAt
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.activeByMeetingId.set(input.meetingId, {
+        agentUserId: input.agentUserId,
+        callType: input.callType,
+        callId: input.callId,
+        connectedAt: Date.now(),
+        state: "failed",
+        lastError: message
+      });
+      logger.warn(
+        {
+          meetingId: input.meetingId,
+          callType: input.callType,
+          callId: input.callId,
+          agentUserId: input.agentUserId,
+          error: message
+        },
+        "stream openai agent connect failed"
+      );
+      return { transport: "stream_openai", agentUserId: input.agentUserId, state: "failed", error: message };
+    }
+  }
+
+  async disconnectAgent(meetingId: string, reason: string): Promise<void> {
+    const active = this.activeByMeetingId.get(meetingId);
+    if (!active) return;
+    this.activeByMeetingId.set(meetingId, { ...active, state: "closed" });
+    const client = active.realtimeClient;
+    if (!client) return;
+    try {
+      const maybeDisconnect = (client as unknown as { disconnect?: () => unknown }).disconnect;
+      const maybeClose = (client as unknown as { close?: () => unknown }).close;
+      if (maybeDisconnect) await maybeDisconnect();
+      else if (maybeClose) await maybeClose();
+      logger.info({ meetingId, reason, agentUserId: active.agentUserId }, "stream openai agent disconnected");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ meetingId, reason, agentUserId: active.agentUserId, error: message }, "stream openai agent disconnect failed");
+    }
+  }
+}
+

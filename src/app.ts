@@ -26,7 +26,7 @@ import { createRealtimeRouter } from "./routes/realtime.routes";
 import { createRuntimeRouter } from "./routes/runtime.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
-import { StreamOpenAiAgent } from "./services/streamOpenAiAgent";
+import { StreamOpenAiAgentService } from "./services/streamOpenAiAgentService";
 import { StreamProvisioner } from "./services/streamProvisioner";
 import { StreamRecordingService } from "./services/streamRecordingService";
 import { InterviewSyncService } from "./services/interviewSyncService";
@@ -91,9 +91,9 @@ export async function createApp(): Promise<AppContext> {
           baseUrl: env.STREAM_BASE_URL
         })
       : undefined;
-  const streamOpenAiAgent =
+  const streamOpenAiAgentService =
     env.STREAM_API_KEY && env.STREAM_API_SECRET
-      ? new StreamOpenAiAgent({
+      ? new StreamOpenAiAgentService({
           apiKey: env.STREAM_API_KEY,
           apiSecret: env.STREAM_API_SECRET,
           baseUrl: env.STREAM_BASE_URL,
@@ -124,7 +124,7 @@ export async function createApp(): Promise<AppContext> {
       : undefined,
     runtimeEvents,
     streamRecordingService,
-    streamOpenAiAgent
+    streamOpenAiAgentService
   );
   const runtimeSnapshots = new RuntimeSnapshotService({
     meetingStore,

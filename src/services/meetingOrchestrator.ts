@@ -25,7 +25,7 @@ import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
-import type { StreamOpenAiAgent } from "./streamOpenAiAgent";
+import type { StreamOpenAiAgentService } from "./streamOpenAiAgentService";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -50,7 +50,7 @@ export class MeetingOrchestrator {
     private readonly avatar?: MeetingOrchestratorAvatarDeps,
     private readonly runtimeEvents?: RuntimeEventStore,
     private readonly streamRecording?: StreamRecordingService,
-    private readonly streamOpenAiAgent?: StreamOpenAiAgent
+    private readonly streamOpenAiAgent?: StreamOpenAiAgentService
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -63,11 +63,9 @@ export class MeetingOrchestrator {
     this.transition(input.internalMeetingId, "in_meeting", "meeting_started", input.metadata, input.sessionId);
     const meeting = this.requireMeeting(input.internalMeetingId);
 
-    // Fire-and-forget avatar pod kickoff. We never await this — the meeting
-    // is considered started even if the GPU pod is slow / down. The pod will
-    // post back to /avatar/events when it is ready, and the frontend polls
-    // /avatar/state/:meetingId to know when to render the live tile.
-    this.kickoffAvatar(meeting, input);
+    // Fire-and-forget agent publisher kickoff. Phase 1: backend-owned Stream OpenAI agent is
+    // optional and disabled by default. Legacy avatar pod remains as fallback/dev only.
+    this.kickoffAgentPublisher(meeting, input);
     // Best-effort: may be too early (no active session yet). Candidate admission will nudge again.
     this.kickoffRecording(meeting.meetingId, "meeting_start");
 
@@ -135,20 +133,8 @@ export class MeetingOrchestrator {
             .filter(Boolean)
             .join("\n\n");
 
-          // Ensure Stream OpenAI agent joins the call before recording starts (best-effort).
-          if (this.streamOpenAiAgent && expectedAgentUserId) {
-            await this.streamOpenAiAgent.ensureConnected({
-              meetingId,
-              metadata: meeting.metadata as Record<string, unknown> | undefined,
-              callType: this.streamRecording!.getCallType(),
-              callId: meetingId,
-              agentUserId: expectedAgentUserId,
-              agentDisplayName,
-              candidateUserId: expectedCandidateUserId,
-              candidateDisplayName: candidateName ?? "Candidate",
-              openaiInstructions: enrichedInstructions
-            });
-          }
+          // NOTE: Phase 1 does NOT auto-enable Stream OpenAI agent here.
+          // When enabled, it is kicked off at meeting start (kickoffAgentPublisher).
 
           const snapshot = await this.streamRecording!.start(meetingId);
           const media = this.streamRecording!.extractParticipantMedia(snapshot.providerRaw);
@@ -359,6 +345,83 @@ export class MeetingOrchestrator {
       });
   }
 
+  private kickoffAgentPublisher(meeting: MeetingRecord, input: StartMeetingInput): void {
+    const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
+    const agentUserId = `agent_${sessionId}`;
+    const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
+    const candidateName =
+      typeof interviewContext.candidateName === "string"
+        ? (interviewContext.candidateName as string)
+        : undefined;
+    const jobTitle =
+      typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
+    const opening = this.composeOpeningInstructions(jobTitle, candidateName);
+    const vacancyText =
+      typeof interviewContext.vacancyText === "string" ? (interviewContext.vacancyText as string) : undefined;
+    const companyName =
+      typeof interviewContext.companyName === "string" ? (interviewContext.companyName as string) : undefined;
+    const questions = Array.isArray(interviewContext.questions)
+      ? (interviewContext.questions as unknown[]).filter((q) => typeof q === "string").slice(0, 20)
+      : [];
+    const instructions = [
+      opening,
+      companyName ? `Компания: ${companyName}.` : null,
+      jobTitle ? `Вакансия: ${jobTitle}.` : null,
+      vacancyText ? `Описание вакансии (контекст): ${vacancyText}` : null,
+      questions.length > 0 ? `Список вопросов (следуй им приоритетно):\n- ${questions.join("\n- ")}` : null
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (this.streamOpenAiAgent?.isEnabled()) {
+      this.updateRecordingMetadata(meeting.meetingId, {
+        agent_transport: "stream_openai",
+        agent_user_id: agentUserId,
+        agent_state: "connecting",
+        agent_last_error: null
+      });
+      void this.streamOpenAiAgent
+        .connectAgentToCall({
+          meetingId: meeting.meetingId,
+          sessionId,
+          jobAiId:
+            typeof (meeting.metadata as any)?.jobAiInterviewId === "number"
+              ? ((meeting.metadata as any).jobAiInterviewId as number)
+              : null,
+          callType: this.streamRecording?.getCallType() ?? "default",
+          callId: meeting.meetingId,
+          agentUserId,
+          instructions
+        })
+        .then((result) => {
+          this.updateRecordingMetadata(meeting.meetingId, {
+            agent_transport: "stream_openai",
+            agent_user_id: result.agentUserId,
+            agent_state: result.state,
+            agent_connected_at: typeof result.connectedAt === "number" ? result.connectedAt : null,
+            agent_last_error: result.error ?? null
+          });
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.updateRecordingMetadata(meeting.meetingId, {
+            agent_transport: "stream_openai",
+            agent_user_id: agentUserId,
+            agent_state: "failed",
+            agent_last_error: message
+          });
+        });
+      // Legacy avatar pod is skipped when Stream agent is enabled.
+      this.updateRecordingMetadata(meeting.meetingId, {
+        avatar_pod_skipped_reason: "stream_openai_agent_enabled"
+      });
+      return;
+    }
+
+    // Legacy path: avatar pod (kept as fallback/dev only).
+    this.kickoffAvatar(meeting, input);
+  }
+
   private composeOpeningInstructions(jobTitle?: string, candidateName?: string): string {
     const role = jobTitle ?? "позицию в нашей команде";
     const greeting = candidateName ? `${candidateName}, добрый день!` : "Добрый день!";
@@ -383,7 +446,8 @@ export class MeetingOrchestrator {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
-    void this.streamOpenAiAgent?.disconnect(meetingId, "meeting_stop");
+    void this.streamOpenAiAgent?.disconnectAgent(meetingId, "meeting_stop");
+    this.updateRecordingMetadata(meetingId, { agent_state: "closed" });
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -433,7 +497,8 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
-    void this.streamOpenAiAgent?.disconnect(meetingId, "meeting_fail");
+    void this.streamOpenAiAgent?.disconnectAgent(meetingId, "meeting_fail");
+    this.updateRecordingMetadata(meetingId, { agent_state: "closed" });
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }

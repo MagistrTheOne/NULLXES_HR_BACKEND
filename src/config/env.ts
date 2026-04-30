@@ -69,9 +69,15 @@ const envSchema = z.object({
   STREAM_API_SECRET: z.string().min(1).optional(),
   STREAM_BASE_URL: z.string().url().default("https://video.stream-io-api.com"),
   STREAM_CALL_TYPE: z.string().min(1).default("default"),
-  // Stream OpenAI agent: publish assistant audio as Stream participant track (for recording)
-  ENABLE_STREAM_OPENAI_AGENT: z.coerce.boolean().default(false),
+  // Stream OpenAI agent (Phase 1): backend-owned Stream participant for recording.
+  // Disabled by default to avoid double-agent until frontend Phase 2 is implemented.
+  STREAM_OPENAI_AGENT_ENABLED: z.coerce.boolean().default(false),
+  STREAM_OPENAI_AGENT_MODEL: z.string().default(""),
+  STREAM_OPENAI_AGENT_VOICE: z.string().default(""),
+  STREAM_OPENAI_AGENT_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   STREAM_OPENAI_AGENT_VALIDITY_SECONDS: z.coerce.number().int().min(60).default(3600),
+  // Backward-compat: previous flag name. Keep until droplet envs are migrated.
+  ENABLE_STREAM_OPENAI_AGENT: z.coerce.boolean().default(false),
   // Post-processing artifacts (assistant audio capture + optional merge)
   ARTIFACTS_DIR: z.string().min(1).default("/var/lib/nullxes-hr/artifacts"),
   ASSISTANT_AUDIO_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000)
