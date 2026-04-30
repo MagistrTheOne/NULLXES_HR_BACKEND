@@ -1,5 +1,5 @@
 import { StreamClient } from "@stream-io/node-sdk";
-import { createRealtimeClient, type RealtimeClient } from "@stream-io/openai-realtime-api";
+import type { RealtimeClient } from "@stream-io/openai-realtime-api";
 import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import type { StreamProvisioner } from "./streamProvisioner";
@@ -63,6 +63,27 @@ function resolveVoice(): string {
   return explicit && explicit.length > 0 ? explicit : env.OPENAI_REALTIME_VOICE;
 }
 
+function withJobAiGuardrails(instructions: string): string {
+  return [
+    instructions,
+    "",
+    "КРИТИЧНО: отвечай только на русском языке.",
+    "КРИТИЧНО: не переходи на английский, китайский или другой язык.",
+    "КРИТИЧНО: не говори 'чем могу помочь сегодня'. Ты уже находишься в интервью.",
+    "КРИТИЧНО: используй только вопросы из списка JobAI, по одному вопросу за раз.",
+    "КРИТИЧНО: не меняй нумерацию вопросов и не придумывай новые номера."
+  ].join("\n");
+}
+
+function readRealtimeEventError(event: unknown): { code?: string; message?: string } {
+  if (!event || typeof event !== "object") return {};
+  const record = event as Record<string, unknown>;
+  const error = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : record;
+  const code = typeof error.code === "string" ? error.code : undefined;
+  const message = typeof error.message === "string" ? error.message : undefined;
+  return { code, message };
+}
+
 export interface StreamOpenAiAgentServiceInput {
   apiKey: string;
   apiSecret: string;
@@ -79,14 +100,10 @@ export interface StreamOpenAiAgentServiceInput {
  */
 export class StreamOpenAiAgentService {
   private readonly streamClient: StreamClient;
-  private readonly apiKey: string;
-  private readonly baseUrl?: string;
   private readonly provisioner?: StreamProvisioner;
   private readonly activeByMeetingId = new Map<string, ActiveAgentConnection>();
 
   constructor(input: StreamOpenAiAgentServiceInput) {
-    this.apiKey = input.apiKey;
-    this.baseUrl = input.baseUrl;
     this.streamClient = new StreamClient(input.apiKey, input.apiSecret, {
       basePath: input.baseUrl
     });
@@ -99,6 +116,65 @@ export class StreamOpenAiAgentService {
 
   getActive(meetingId: string): ActiveAgentConnection | undefined {
     return this.activeByMeetingId.get(meetingId);
+  }
+
+  private markFailed(input: ConnectStreamOpenAiAgentInput, message: string): ConnectStreamOpenAiAgentResult {
+    this.activeByMeetingId.set(input.meetingId, {
+      agentUserId: input.agentUserId,
+      callType: input.callType,
+      callId: input.callId,
+      connectedAt: Date.now(),
+      state: "failed",
+      lastError: message
+    });
+    return { transport: "stream_openai", agentUserId: input.agentUserId, state: "failed", error: message };
+  }
+
+  private subscribeToRealtimeEvents(realtimeClient: RealtimeClient, input: ConnectStreamOpenAiAgentInput): void {
+    try {
+      const anyClient = realtimeClient as unknown as { on?: (event: string, cb: (payload: unknown) => void) => void };
+      if (typeof anyClient.on !== "function") return;
+
+      const events = [
+        "error",
+        "session.created",
+        "session.updated",
+        "response.created",
+        "response.done",
+        "conversation.item.created"
+      ];
+
+      for (const eventType of events) {
+        anyClient.on(eventType, (payload: unknown) => {
+          const error = readRealtimeEventError(payload);
+          const logPayload = {
+            meetingId: input.meetingId,
+            agentUserId: input.agentUserId,
+            eventType,
+            ...(error.code ? { errorCode: error.code } : {}),
+            ...(error.message ? { errorMessage: error.message } : {})
+          };
+          if (eventType === "error") {
+            logger.warn(logPayload, "stream openai agent realtime event");
+          } else {
+            logger.info(logPayload, "stream openai agent realtime event");
+          }
+        });
+      }
+    } catch {
+      // Event diagnostics must never break the agent boot path.
+    }
+  }
+
+  private async cleanupRealtimeClient(realtimeClient: RealtimeClient): Promise<void> {
+    try {
+      const maybeDisconnect = (realtimeClient as unknown as { disconnect?: () => unknown }).disconnect;
+      const maybeClose = (realtimeClient as unknown as { close?: () => unknown }).close;
+      if (maybeDisconnect) await maybeDisconnect();
+      else if (maybeClose) await maybeClose();
+    } catch {
+      // Ignore cleanup errors; the fatal boot log above is the actionable signal.
+    }
   }
 
   async connectAgentToCall(input: ConnectStreamOpenAiAgentInput): Promise<ConnectStreamOpenAiAgentResult> {
@@ -134,6 +210,22 @@ export class StreamOpenAiAgentService {
     // TODO(phase2): when NEXT_PUBLIC_STREAM_OPENAI_AGENT_MODE=1, frontend must not start browser speaking OpenAI Realtime session.
 
     try {
+      const resolvedModel = input.model ?? resolveModel();
+      const resolvedVoice = input.voice ?? resolveVoice();
+      const instructions = withJobAiGuardrails(input.instructions);
+
+      logger.info(
+        {
+          meetingId: input.meetingId,
+          streamOpenAiAgentEnabled: Boolean(env.STREAM_OPENAI_AGENT_ENABLED),
+          openAiRealtimeModel: env.OPENAI_REALTIME_MODEL,
+          resolvedModel,
+          resolvedVoice,
+          hasOpenAiApiKey: Boolean(env.OPENAI_API_KEY)
+        },
+        "stream openai agent env sanity"
+      );
+
       if (this.provisioner) {
         await this.provisioner.provisionAgentForCall({
           callType: input.callType,
@@ -153,78 +245,94 @@ export class StreamOpenAiAgentService {
           callType: input.callType,
           callId: input.callId,
           agentUserId: input.agentUserId,
-          model: input.model ?? resolveModel()
+          model: resolvedModel
         },
         "stream openai agent connecting"
       );
 
-      const streamUserToken = this.streamClient.generateCallToken({
-        user_id: input.agentUserId,
-        call_cids: [`${input.callType}:${input.callId}`],
-        validity_in_seconds: env.STREAM_OPENAI_AGENT_VALIDITY_SECONDS
-      });
+      const call = this.streamClient.video.call(input.callType, input.callId);
 
-      const realtimeClient = createRealtimeClient({
-        baseUrl: this.baseUrl ?? "https://video.stream-io-api.com",
-        call: { type: input.callType, id: input.callId },
-        streamApiKey: this.apiKey,
-        streamUserToken,
-        openAiApiKey: env.OPENAI_API_KEY,
-        model: (input.model ?? resolveModel()) as never
-      });
+      logger.info(
+        {
+          meetingId: input.meetingId,
+          callType: input.callType,
+          callId: input.callId,
+          agentUserId: input.agentUserId,
+          model: resolvedModel,
+          voice: resolvedVoice,
+          instructionsLength: instructions.length
+        },
+        "stream openai agent connectOpenAi requested"
+      );
 
-      // Set the JobAI interview prompt BEFORE connect(). The OpenAI reference client
-      // sends its session config during connect(); applying instructions only after
-      // Stream's connectOpenAi() returns can leave the agent in generic assistant mode.
-      realtimeClient.updateSession({
-        instructions: input.instructions,
-        voice: (input.voice ?? resolveVoice()) as never
-      });
-
-      await withTimeout(
-        realtimeClient.connect(),
+      const realtimeClient = await withTimeout(
+        this.streamClient.video.connectOpenAi({
+          call,
+          openAiApiKey: env.OPENAI_API_KEY,
+          agentUserId: input.agentUserId,
+          model: resolvedModel as never
+        }),
         env.STREAM_OPENAI_AGENT_CONNECT_TIMEOUT_MS,
         "stream connectOpenAi"
       );
 
-      // Best-effort updateSession (non-fatal)
+      logger.info(
+        {
+          meetingId: input.meetingId,
+          callType: input.callType,
+          callId: input.callId,
+          agentUserId: input.agentUserId
+        },
+        "stream openai agent connected"
+      );
+
+      this.subscribeToRealtimeEvents(realtimeClient, input);
+
       try {
-        // IMPORTANT: do NOT extract updateSession into a variable without binding.
-        // Some client implementations rely on `this.sessionConfig` and will throw
-        // if called unbound (e.g. "Cannot read properties of undefined (reading 'sessionConfig')").
-        const maybeUpdateSession = (realtimeClient as unknown as { updateSession?: (v: unknown) => unknown })
-          .updateSession;
-        if (typeof maybeUpdateSession === "function") {
-          await (maybeUpdateSession as (this: unknown, v: unknown) => unknown).call(realtimeClient, {
-            instructions: input.instructions,
-            voice: input.voice ?? resolveVoice()
-          });
-          logger.info(
-            {
-              meetingId: input.meetingId,
-              agentUserId: input.agentUserId,
-              instructionsLength: input.instructions.length
-            },
-            "stream openai agent session updated"
-          );
-        }
+        await realtimeClient.updateSession({
+          instructions,
+          voice: resolvedVoice as never
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent updateSession failed");
+        this.markFailed(input, message);
+        logger.warn(
+          { meetingId: input.meetingId, agentUserId: input.agentUserId, error: message },
+          "stream openai agent updateSession failed fatal"
+        );
+        await this.cleanupRealtimeClient(realtimeClient);
+        return { transport: "stream_openai", agentUserId: input.agentUserId, state: "failed", error: message };
       }
 
-      // Best-effort event subscriptions (do not assume exact emitter API).
+      logger.info(
+        {
+          meetingId: input.meetingId,
+          agentUserId: input.agentUserId,
+          instructionsLength: instructions.length
+        },
+        "stream openai agent session updated"
+      );
+
       try {
-        const anyClient = realtimeClient as unknown as { on?: (event: string, cb: (...args: any[]) => void) => void };
-        if (typeof anyClient.on === "function") {
-          anyClient.on("error", (e: unknown) => {
-            const message = e instanceof Error ? e.message : String(e);
-            logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent runtime error");
-          });
-        }
-      } catch {
-        // ignore
+        await realtimeClient.sendUserMessageContent([
+          {
+            type: "input_text",
+            text:
+              "Начни интервью сейчас. Следуй системным инструкциям JobAI. Не спрашивай, чем помочь. Поздоровайся с кандидатом по имени, если имя известно, затем сразу задай первый вопрос из списка. Веди интервью только на русском языке."
+          }
+        ]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.markFailed(input, message);
+        logger.warn(
+          { meetingId: input.meetingId, agentUserId: input.agentUserId, error: message },
+          "stream openai agent kickoff failed"
+        );
+        await this.cleanupRealtimeClient(realtimeClient);
+        return { transport: "stream_openai", agentUserId: input.agentUserId, state: "failed", error: message };
       }
+
+      logger.info({ meetingId: input.meetingId, agentUserId: input.agentUserId }, "stream openai agent kickoff sent");
 
       const connectedAt = Date.now();
       this.activeByMeetingId.set(input.meetingId, {
@@ -235,11 +343,6 @@ export class StreamOpenAiAgentService {
         state: "connected",
         realtimeClient
       });
-
-      logger.info(
-        { meetingId: input.meetingId, callType: input.callType, callId: input.callId, agentUserId: input.agentUserId },
-        "stream openai agent connected"
-      );
       return {
         transport: "stream_openai",
         agentUserId: input.agentUserId,
@@ -248,14 +351,7 @@ export class StreamOpenAiAgentService {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.activeByMeetingId.set(input.meetingId, {
-        agentUserId: input.agentUserId,
-        callType: input.callType,
-        callId: input.callId,
-        connectedAt: Date.now(),
-        state: "failed",
-        lastError: message
-      });
+      this.markFailed(input, message);
       logger.warn(
         {
           meetingId: input.meetingId,
