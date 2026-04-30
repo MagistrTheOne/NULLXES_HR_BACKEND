@@ -30,6 +30,8 @@ export type StreamRecordingSnapshot = {
   providerRaw?: Record<string, unknown>;
 };
 
+export type ParticipantMediaFlags = { hasAudio: boolean; hasVideo: boolean };
+
 export class StreamRecordingStateError extends Error {
   readonly code: "not_recording" | "already_recording" | "processing" | "not_found" | "no_active_session";
   readonly status: number;
@@ -101,6 +103,69 @@ export class StreamRecordingService {
 
   getCallType(): string {
     return this.callType;
+  }
+
+  /**
+   * Best-effort extraction of participant media flags from Stream call payload.
+   * Stream recording will only capture what is published as Stream participant tracks.
+   */
+  extractParticipantMedia(providerRaw?: Record<string, unknown>): Record<string, ParticipantMediaFlags> {
+    if (!providerRaw) return {};
+    const out: Record<string, ParticipantMediaFlags> = {};
+
+    const maybeIngest = (item: unknown) => {
+      const rec = asRecord(item);
+      if (!rec) return;
+      const userId =
+        (typeof rec.user_id === "string" && rec.user_id) ||
+        (typeof rec.userId === "string" && rec.userId) ||
+        (typeof (rec.user as any)?.id === "string" && (rec.user as any).id) ||
+        "";
+      if (!userId) return;
+      const hasAudio =
+        rec.has_audio === true ||
+        rec.hasAudio === true ||
+        rec.audio === true ||
+        rec.published_audio === true ||
+        rec.publishedAudio === true;
+      const hasVideo =
+        rec.has_video === true ||
+        rec.hasVideo === true ||
+        rec.video === true ||
+        rec.published_video === true ||
+        rec.publishedVideo === true;
+      out[userId] = {
+        hasAudio: Boolean(hasAudio),
+        hasVideo: Boolean(hasVideo)
+      };
+    };
+
+    const visit = (node: unknown, depth: number) => {
+      if (!node || depth > 6) return;
+      if (Array.isArray(node)) {
+        for (const entry of node) {
+          maybeIngest(entry);
+          visit(entry, depth + 1);
+        }
+        return;
+      }
+      const rec = asRecord(node);
+      if (!rec) return;
+      // Common Stream shapes: call.session.participants / call.session.participants_by_role / call.session?.participants
+      for (const value of Object.values(rec)) {
+        if (Array.isArray(value)) {
+          for (const entry of value) {
+            maybeIngest(entry);
+          }
+        }
+      }
+      for (const value of Object.values(rec)) {
+        visit(value, depth + 1);
+      }
+    };
+
+    visit(providerRaw, 0);
+    return out;
   }
 
   /**

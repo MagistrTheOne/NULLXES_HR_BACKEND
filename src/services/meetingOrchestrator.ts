@@ -102,7 +102,17 @@ export class MeetingOrchestrator {
       const maxAttempts = backoff.length;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
+          const meeting = this.requireMeeting(meetingId);
+          const expectedAgentUserId = meeting.sessionId ? `agent_${meeting.sessionId}` : null;
+          const expectedCandidateUserId = `candidate-${meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+
           const snapshot = await this.streamRecording!.start(meetingId);
+          const media = this.streamRecording!.extractParticipantMedia(snapshot.providerRaw);
+          const agentFlags = expectedAgentUserId ? media[expectedAgentUserId] : undefined;
+          const candidateFlags = media[expectedCandidateUserId];
+          const agentAudioMissing =
+            Boolean(expectedAgentUserId) && (!agentFlags || agentFlags.hasAudio !== true);
+
           this.updateRecordingMetadata(meetingId, {
             stream_recording_state: snapshot.state,
             stream_call_id: snapshot.callId,
@@ -110,7 +120,12 @@ export class MeetingOrchestrator {
             stream_recording_id: snapshot.activeRecordingId,
             stream_recording_start_attempts: attempt,
             stream_recording_start_reason: reason,
-            stream_recording_last_error: null
+            stream_recording_last_error: null,
+            agent_stream_has_audio: agentFlags?.hasAudio ?? null,
+            agent_stream_has_video: agentFlags?.hasVideo ?? null,
+            candidate_stream_has_audio: candidateFlags?.hasAudio ?? null,
+            candidate_stream_has_video: candidateFlags?.hasVideo ?? null,
+            agent_audio_track_missing_for_stream_recording: agentAudioMissing ? true : null
           });
           this.enqueueRecordingSignal(meetingId, "recording_auto_started", {
             stream_recording_state: snapshot.state,
@@ -126,10 +141,22 @@ export class MeetingOrchestrator {
               state: snapshot.state,
               recordingId: snapshot.activeRecordingId,
               attempt,
-              reason
+              reason,
+              expectedAgentUserId,
+              expectedCandidateUserId,
+              agentHasAudio: agentFlags?.hasAudio ?? null,
+              agentHasVideo: agentFlags?.hasVideo ?? null,
+              candidateHasAudio: candidateFlags?.hasAudio ?? null,
+              candidateHasVideo: candidateFlags?.hasVideo ?? null
             },
             "stream recording auto-start attempted"
           );
+          if (agentAudioMissing) {
+            logger.warn(
+              { meetingId, expectedAgentUserId, callType: snapshot.callType, callId: snapshot.callId },
+              "agent_audio_track_missing_for_stream_recording"
+            );
+          }
           return;
         } catch (error) {
           const retryable =

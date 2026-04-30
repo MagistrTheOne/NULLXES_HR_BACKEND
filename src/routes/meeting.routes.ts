@@ -271,7 +271,15 @@ export function createMeetingRouter(
             : typeof meta.stream_recording_error === "string"
               ? meta.stream_recording_error
               : null,
-        recordingState: typeof meta.stream_recording_state === "string" ? meta.stream_recording_state : snapshot.state
+        recordingState: typeof meta.stream_recording_state === "string" ? meta.stream_recording_state : snapshot.state,
+        agentHasAudio: typeof meta.agent_stream_has_audio === "boolean" ? meta.agent_stream_has_audio : null,
+        agentHasVideo: typeof meta.agent_stream_has_video === "boolean" ? meta.agent_stream_has_video : null,
+        candidateHasAudio: typeof meta.candidate_stream_has_audio === "boolean" ? meta.candidate_stream_has_audio : null,
+        candidateHasVideo: typeof meta.candidate_stream_has_video === "boolean" ? meta.candidate_stream_has_video : null,
+        agentAudioTrackMissingWarning:
+          meta.agent_audio_track_missing_for_stream_recording === true
+            ? "agent_audio_track_missing_for_stream_recording"
+            : null
       }
     });
   }));
