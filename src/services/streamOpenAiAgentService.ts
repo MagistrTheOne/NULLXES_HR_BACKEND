@@ -1,5 +1,5 @@
 import { StreamClient } from "@stream-io/node-sdk";
-import type { RealtimeClient } from "@stream-io/openai-realtime-api";
+import { createRealtimeClient, type RealtimeClient } from "@stream-io/openai-realtime-api";
 import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import type { StreamProvisioner } from "./streamProvisioner";
@@ -79,10 +79,14 @@ export interface StreamOpenAiAgentServiceInput {
  */
 export class StreamOpenAiAgentService {
   private readonly streamClient: StreamClient;
+  private readonly apiKey: string;
+  private readonly baseUrl?: string;
   private readonly provisioner?: StreamProvisioner;
   private readonly activeByMeetingId = new Map<string, ActiveAgentConnection>();
 
   constructor(input: StreamOpenAiAgentServiceInput) {
+    this.apiKey = input.apiKey;
+    this.baseUrl = input.baseUrl;
     this.streamClient = new StreamClient(input.apiKey, input.apiSecret, {
       basePath: input.baseUrl
     });
@@ -141,8 +145,6 @@ export class StreamOpenAiAgentService {
         });
       }
 
-      const call = this.streamClient.video.call(input.callType, input.callId);
-
       logger.info(
         {
           meetingId: input.meetingId,
@@ -156,14 +158,31 @@ export class StreamOpenAiAgentService {
         "stream openai agent connecting"
       );
 
-      const realtimeClient = await withTimeout(
-        this.streamClient.video.connectOpenAi({
-          call,
-          agentUserId: input.agentUserId,
-          openAiApiKey: env.OPENAI_API_KEY,
-          model: (input.model ?? resolveModel()) as unknown as never,
-          validityInSeconds: env.STREAM_OPENAI_AGENT_VALIDITY_SECONDS
-        }),
+      const streamUserToken = this.streamClient.generateCallToken({
+        user_id: input.agentUserId,
+        call_cids: [`${input.callType}:${input.callId}`],
+        validity_in_seconds: env.STREAM_OPENAI_AGENT_VALIDITY_SECONDS
+      });
+
+      const realtimeClient = createRealtimeClient({
+        baseUrl: this.baseUrl ?? "https://video.stream-io-api.com",
+        call: { type: input.callType, id: input.callId },
+        streamApiKey: this.apiKey,
+        streamUserToken,
+        openAiApiKey: env.OPENAI_API_KEY,
+        model: (input.model ?? resolveModel()) as never
+      });
+
+      // Set the JobAI interview prompt BEFORE connect(). The OpenAI reference client
+      // sends its session config during connect(); applying instructions only after
+      // Stream's connectOpenAi() returns can leave the agent in generic assistant mode.
+      realtimeClient.updateSession({
+        instructions: input.instructions,
+        voice: (input.voice ?? resolveVoice()) as never
+      });
+
+      await withTimeout(
+        realtimeClient.connect(),
         env.STREAM_OPENAI_AGENT_CONNECT_TIMEOUT_MS,
         "stream connectOpenAi"
       );
@@ -180,6 +199,14 @@ export class StreamOpenAiAgentService {
             instructions: input.instructions,
             voice: input.voice ?? resolveVoice()
           });
+          logger.info(
+            {
+              meetingId: input.meetingId,
+              agentUserId: input.agentUserId,
+              instructionsLength: input.instructions.length
+            },
+            "stream openai agent session updated"
+          );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
