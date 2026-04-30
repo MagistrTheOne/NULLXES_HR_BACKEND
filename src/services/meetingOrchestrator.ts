@@ -349,10 +349,19 @@ export class MeetingOrchestrator {
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
     const agentUserId = `agent_${sessionId}`;
     const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
-    const candidateName =
-      typeof interviewContext.candidateName === "string"
-        ? (interviewContext.candidateName as string)
-        : undefined;
+    const candidateName = (() => {
+      const direct = typeof interviewContext.candidateName === "string" ? interviewContext.candidateName.trim() : "";
+      if (direct) return direct;
+      const full =
+        typeof interviewContext.candidateFullName === "string" ? interviewContext.candidateFullName.trim() : "";
+      if (full) return full;
+      const first =
+        typeof interviewContext.candidateFirstName === "string" ? interviewContext.candidateFirstName.trim() : "";
+      const last =
+        typeof interviewContext.candidateLastName === "string" ? interviewContext.candidateLastName.trim() : "";
+      const combined = [first, last].filter(Boolean).join(" ").trim();
+      return combined || undefined;
+    })();
     const jobTitle =
       typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
     const opening = this.composeOpeningInstructions(jobTitle, candidateName);
@@ -360,9 +369,26 @@ export class MeetingOrchestrator {
       typeof interviewContext.vacancyText === "string" ? (interviewContext.vacancyText as string) : undefined;
     const companyName =
       typeof interviewContext.companyName === "string" ? (interviewContext.companyName as string) : undefined;
-    const questions = Array.isArray(interviewContext.questions)
-      ? (interviewContext.questions as unknown[]).filter((q) => typeof q === "string").slice(0, 20)
-      : [];
+    const questions = (() => {
+      if (!Array.isArray(interviewContext.questions)) return [];
+      const out: string[] = [];
+      for (const q of interviewContext.questions as unknown[]) {
+        if (typeof q === "string") {
+          const t = q.trim();
+          if (t) out.push(t);
+          continue;
+        }
+        if (q && typeof q === "object") {
+          const text = (q as Record<string, unknown>).text;
+          if (typeof text === "string") {
+            const t = text.trim();
+            if (t) out.push(t);
+          }
+        }
+        if (out.length >= 30) break;
+      }
+      return out.slice(0, 20);
+    })();
     const instructions = [
       opening,
       companyName ? `Компания: ${companyName}.` : null,
