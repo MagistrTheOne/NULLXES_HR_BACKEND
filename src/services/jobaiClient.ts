@@ -40,10 +40,20 @@ export class JobAiClient {
     return this.extractInterview(response);
   }
 
-  async updateInterviewStatus(id: number, status: JobAiInterviewStatus): Promise<JobAiInterview> {
+  async updateInterviewStatus(
+    id: number,
+    status: JobAiInterviewStatus,
+    opts?: { stream_call_id?: string; stream_call_type?: string }
+  ): Promise<JobAiInterview> {
+    const stream_call_id = opts?.stream_call_id?.trim();
+    const stream_call_type = opts?.stream_call_type?.trim();
     const response = await this.request<JsonRecord>(`/ai-api/interviews/${id}/status`, {
       method: "POST",
-      body: JSON.stringify({ status })
+      body: JSON.stringify({
+        status,
+        ...(stream_call_id ? { stream_call_id } : {}),
+        ...(stream_call_type ? { stream_call_type } : {})
+      })
     });
     return this.extractInterview(response);
   }

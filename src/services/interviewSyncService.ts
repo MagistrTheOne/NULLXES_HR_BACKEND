@@ -1,4 +1,5 @@
 import { HttpError } from "../middleware/errorHandler";
+import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { InMemoryInterviewStore, splitRuFullName } from "./interviewStore";
 import { JobAiClient } from "./jobaiClient";
@@ -126,7 +127,21 @@ export class InterviewSyncService {
       throw new HttpError(503, "JobAI API is not configured");
     }
 
-    const updated = await this.jobAiClient.updateInterviewStatus(jobAiId, status);
+    const isTerminal = status === "completed" || status === "stopped_during_meeting";
+    const projection = current.projection;
+    const stream_call_id =
+      (typeof projection.recording?.callId === "string" ? projection.recording.callId : undefined) ??
+      (typeof projection.nullxesMeetingId === "string" ? projection.nullxesMeetingId : undefined);
+    const stream_call_type =
+      (typeof projection.recording?.callType === "string" ? projection.recording.callType : undefined) ??
+      env.STREAM_CALL_TYPE;
+    if (isTerminal && !stream_call_id) {
+      logger.warn(
+        { jobAiId, status, nullxesMeetingId: projection.nullxesMeetingId },
+        "jobai status transition: stream_call_id is missing; sending status update without call binding"
+      );
+    }
+    const updated = await this.jobAiClient.updateInterviewStatus(jobAiId, status, isTerminal ? { stream_call_id, stream_call_type } : undefined);
     return this.store.upsert(updated);
   }
 

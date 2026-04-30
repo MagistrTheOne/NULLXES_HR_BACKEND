@@ -473,18 +473,44 @@ export class MeetingOrchestrator {
   }
 
   private enqueueStatusWebhook(transition: MeetingTransitionEvent): void {
-    const terminal = transition.toStatus === "completed" || transition.toStatus === "stopped_during_meeting";
+    const terminal =
+      transition.toStatus === "completed" ||
+      transition.toStatus === "stopped_during_meeting" ||
+      transition.toStatus === "failed_audio_pool_busy" ||
+      transition.toStatus === "failed_connect_ws_audio";
     const meeting = this.requireMeeting(transition.meetingId);
     const meetingMetadata = meeting.metadata ?? {};
     const enrichedMetadata: Record<string, unknown> = {
       ...meetingMetadata,
       ...(transition.metadata ?? {})
     };
+    const rawStreamCallId =
+      typeof (meetingMetadata as Record<string, unknown>).stream_call_id === "string"
+        ? String((meetingMetadata as Record<string, unknown>).stream_call_id)
+        : typeof (meetingMetadata as Record<string, unknown>).streamCallId === "string"
+          ? String((meetingMetadata as Record<string, unknown>).streamCallId)
+          : "";
+    const resolvedStreamCallId = rawStreamCallId.trim() || transition.meetingId;
+    const rawStreamCallType =
+      typeof (meetingMetadata as Record<string, unknown>).stream_call_type === "string"
+        ? String((meetingMetadata as Record<string, unknown>).stream_call_type)
+        : typeof (meetingMetadata as Record<string, unknown>).streamCallType === "string"
+          ? String((meetingMetadata as Record<string, unknown>).streamCallType)
+          : "";
+    const resolvedStreamCallType = rawStreamCallType.trim() || env.STREAM_CALL_TYPE;
     if (terminal) {
-      enrichedMetadata.stream_call_id = transition.meetingId;
-      enrichedMetadata.stream_call_type = env.STREAM_CALL_TYPE;
+      enrichedMetadata.stream_call_id = resolvedStreamCallId;
+      enrichedMetadata.stream_call_type = resolvedStreamCallType;
       if (typeof meetingMetadata.stream_recording_id === "string" && meetingMetadata.stream_recording_id.trim().length > 0) {
         enrichedMetadata.stream_recording_id = meetingMetadata.stream_recording_id;
+      }
+      const explicitBinding = Boolean(rawStreamCallId.trim());
+      if (!explicitBinding) {
+        const jobAiId = (meetingMetadata as Record<string, unknown>).jobAiInterviewId;
+        logger.warn(
+          { meetingId: transition.meetingId, jobAiId, status: transition.toStatus, streamCallId: resolvedStreamCallId },
+          "terminal webhook stream_call_id missing in meeting metadata; using fallback binding"
+        );
       }
     }
     const payload: MeetingWebhookEvent = {
@@ -497,6 +523,12 @@ export class MeetingOrchestrator {
       status: transition.toStatus,
       reason: transition.reason,
       timestampMs: transition.timestampMs,
+      ...(terminal
+        ? {
+            stream_call_id: resolvedStreamCallId,
+            stream_call_type: resolvedStreamCallType
+          }
+        : {}),
       metadata: Object.keys(enrichedMetadata).length > 0 ? enrichedMetadata : undefined
     };
     const idempotencyKey = this.buildIdempotencyKey(payload);

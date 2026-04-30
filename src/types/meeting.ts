@@ -79,6 +79,12 @@ export interface MeetingStatusWebhookPayload {
   status: MeetingStatus;
   reason: string;
   timestampMs: number;
+  /**
+   * Stream call binding (SFU) for terminal statuses.
+   * Added in v2 contract so downstream systems can attach recordings / dashboards.
+   */
+  stream_call_id?: string;
+  stream_call_type?: string;
   metadata?: Record<string, unknown>;
 }
 
