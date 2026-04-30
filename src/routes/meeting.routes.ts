@@ -257,41 +257,10 @@ export function createMeetingRouter(
       stream_recording_url: withUrl?.url,
       stream_recording_filename: withUrl?.filename
     });
-    const meta = orchestrator.getMeeting(meetingId).meeting.metadata ?? {};
     res.status(200).json({
       configured: true,
       ...snapshot,
-      callType: callType ?? snapshot.callType,
-      diagnostics: {
-        streamRecordingUrl: typeof meta.stream_recording_url === "string" ? meta.stream_recording_url : null,
-        recordingStartAttempts: typeof meta.stream_recording_start_attempts === "number" ? meta.stream_recording_start_attempts : null,
-        lastRecordingError:
-          typeof meta.stream_recording_last_error === "string"
-            ? meta.stream_recording_last_error
-            : typeof meta.stream_recording_error === "string"
-              ? meta.stream_recording_error
-              : null,
-        recordingState: typeof meta.stream_recording_state === "string" ? meta.stream_recording_state : snapshot.state,
-        warning: typeof meta.stream_recording_warning === "string" ? meta.stream_recording_warning : null,
-        agent: {
-          present: meta.agent_stream_present === true ? true : meta.agent_stream_present === false ? false : null,
-          hasAudio: typeof meta.agent_stream_has_audio === "boolean" ? meta.agent_stream_has_audio : null,
-          hasVideo: typeof meta.agent_stream_has_video === "boolean" ? meta.agent_stream_has_video : null
-        },
-        candidate: {
-          present: meta.candidate_stream_present === true ? true : meta.candidate_stream_present === false ? false : null,
-          hasAudio: typeof meta.candidate_stream_has_audio === "boolean" ? meta.candidate_stream_has_audio : null,
-          hasVideo: typeof meta.candidate_stream_has_video === "boolean" ? meta.candidate_stream_has_video : null
-        },
-        agentHasAudio: typeof meta.agent_stream_has_audio === "boolean" ? meta.agent_stream_has_audio : null,
-        agentHasVideo: typeof meta.agent_stream_has_video === "boolean" ? meta.agent_stream_has_video : null,
-        candidateHasAudio: typeof meta.candidate_stream_has_audio === "boolean" ? meta.candidate_stream_has_audio : null,
-        candidateHasVideo: typeof meta.candidate_stream_has_video === "boolean" ? meta.candidate_stream_has_video : null,
-        agentAudioTrackMissingWarning:
-          meta.agent_audio_track_missing_for_stream_recording === true
-            ? "agent_audio_track_missing_for_stream_recording"
-            : null
-      }
+      callType: callType ?? snapshot.callType
     });
   }));
 

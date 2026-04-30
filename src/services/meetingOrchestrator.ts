@@ -20,13 +20,11 @@ import type {
 } from "../types/meeting";
 import { AvatarClient, AvatarServiceUnavailableError } from "./avatarClient";
 import type { AvatarStateStore } from "./avatarStateStore";
-import { buildJobAiInterviewPromptFromMetadata } from "./jobAiInterviewPrompt";
 import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
-import type { StreamOpenAiAgentService } from "./streamOpenAiAgentService";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -40,9 +38,6 @@ export interface MeetingOrchestratorAvatarDeps {
 }
 
 export class MeetingOrchestrator {
-  private recordingKickoffInFlight = new Set<string>();
-  private recordingSettingsEnsured = false;
-
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
@@ -50,8 +45,7 @@ export class MeetingOrchestrator {
     private readonly postMeetingProcessor: PostMeetingProcessor,
     private readonly avatar?: MeetingOrchestratorAvatarDeps,
     private readonly runtimeEvents?: RuntimeEventStore,
-    private readonly streamRecording?: StreamRecordingService,
-    private readonly streamOpenAiAgent?: StreamOpenAiAgentService
+    private readonly streamRecording?: StreamRecordingService
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -64,11 +58,12 @@ export class MeetingOrchestrator {
     this.transition(input.internalMeetingId, "in_meeting", "meeting_started", input.metadata, input.sessionId);
     const meeting = this.requireMeeting(input.internalMeetingId);
 
-    // Fire-and-forget agent publisher kickoff. Phase 1: backend-owned Stream OpenAI agent is
-    // optional and disabled by default. Legacy avatar pod remains as fallback/dev only.
-    this.kickoffAgentPublisher(meeting, input);
-    // Best-effort: may be too early (no active session yet). Candidate admission will nudge again.
-    this.kickoffRecording(meeting.meetingId, "meeting_start");
+    // Fire-and-forget avatar pod kickoff. We never await this — the meeting
+    // is considered started even if the GPU pod is slow / down. The pod will
+    // post back to /avatar/events when it is ready, and the frontend polls
+    // /avatar/state/:meetingId to know when to render the live tile.
+    this.kickoffAvatar(meeting, input);
+    this.kickoffRecording(meeting.meetingId);
 
     return {
       meeting,
@@ -76,102 +71,28 @@ export class MeetingOrchestrator {
     };
   }
 
-  /** Best-effort “nudge” to start Stream recording once call becomes active. */
-  nudgeRecordingStart(meetingId: string, reason: string): void {
-    this.kickoffRecording(meetingId, reason);
-  }
-
-  private kickoffRecording(meetingId: string, reason: string): void {
+  private kickoffRecording(meetingId: string): void {
     if (!this.streamRecording || !this.streamRecording.isConfigured()) {
       return;
     }
-    if (this.recordingKickoffInFlight.has(meetingId)) {
-      return;
-    }
-    this.recordingKickoffInFlight.add(meetingId);
     const tryStart = async (): Promise<void> => {
-      // Align Stream call type recording settings with product defaults (once per process).
-      if (!this.recordingSettingsEnsured) {
-        await this.streamRecording!.ensureCallTypeRecordingSettings().catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.warn({ meetingId, error: message }, "stream recording call type settings update failed");
-        });
-        this.recordingSettingsEnsured = true;
-      }
+      // Align Stream call type recording settings with product defaults.
+      // This is safe to re-run, but we don't want it to block meeting start.
+      await this.streamRecording!.ensureCallTypeRecordingSettings().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ meetingId, error: message }, "stream recording call type settings update failed");
+      });
 
       const backoff = [2_000, 4_000, 8_000, 15_000, 15_000] as const;
       const maxAttempts = backoff.length;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          const meeting = this.requireMeeting(meetingId);
-          const expectedAgentUserId = meeting.sessionId ? `agent_${meeting.sessionId}` : null;
-          const expectedCandidateUserId = `candidate-${meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
-          const interviewContext = (meeting.metadata?.interviewContext ?? {}) as Record<string, unknown>;
-          const candidateName =
-            typeof interviewContext.candidateName === "string"
-              ? (interviewContext.candidateName as string)
-              : undefined;
-          const jobTitle =
-            typeof interviewContext.jobTitle === "string"
-              ? (interviewContext.jobTitle as string)
-              : undefined;
-          const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
-          const openingInstructions = this.composeOpeningInstructions(jobTitle, candidateName);
-          const vacancyText =
-            typeof interviewContext.vacancyText === "string" ? (interviewContext.vacancyText as string) : undefined;
-          const companyName =
-            typeof interviewContext.companyName === "string" ? (interviewContext.companyName as string) : undefined;
-          const questions = Array.isArray(interviewContext.questions)
-            ? (interviewContext.questions as unknown[]).filter((q) => typeof q === "string").slice(0, 20)
-            : [];
-          const enrichedInstructions = [
-            openingInstructions,
-            companyName ? `Компания: ${companyName}.` : null,
-            jobTitle ? `Вакансия: ${jobTitle}.` : null,
-            vacancyText ? `Описание вакансии (контекст): ${vacancyText}` : null,
-            questions.length > 0 ? `Список вопросов (следуй им приоритетно):\n- ${questions.join("\n- ")}` : null
-          ]
-            .filter(Boolean)
-            .join("\n\n");
-
-          // NOTE: Phase 1 does NOT auto-enable Stream OpenAI agent here.
-          // When enabled, it is kicked off at meeting start (kickoffAgentPublisher).
-
           const snapshot = await this.streamRecording!.start(meetingId);
-          const media = this.streamRecording!.extractParticipantMedia(snapshot.providerRaw);
-          const agentFlags = expectedAgentUserId ? media[expectedAgentUserId] : undefined;
-          const candidateFlags = media[expectedCandidateUserId];
-          const agentPresent = Boolean(expectedAgentUserId && Object.prototype.hasOwnProperty.call(media, expectedAgentUserId));
-          const candidatePresent = Boolean(Object.prototype.hasOwnProperty.call(media, expectedCandidateUserId));
-          const agentAudioMissing =
-            Boolean(expectedAgentUserId) && (!agentFlags || agentFlags.hasAudio !== true);
-          const warning =
-            !expectedAgentUserId
-              ? null
-              : !agentPresent
-                ? "agent_participant_missing_for_stream_recording"
-                : agentAudioMissing
-                  ? "agent_audio_track_missing_for_stream_recording"
-                  : !candidatePresent
-                    ? "candidate_participant_missing_for_stream_recording"
-                    : null;
-
           this.updateRecordingMetadata(meetingId, {
             stream_recording_state: snapshot.state,
             stream_call_id: snapshot.callId,
             stream_call_type: snapshot.callType,
-            stream_recording_id: snapshot.activeRecordingId,
-            stream_recording_start_attempts: attempt,
-            stream_recording_start_reason: reason,
-            stream_recording_last_error: null,
-            stream_recording_warning: warning,
-            agent_stream_present: agentPresent ? true : null,
-            candidate_stream_present: candidatePresent ? true : null,
-            agent_stream_has_audio: agentFlags?.hasAudio ?? null,
-            agent_stream_has_video: agentFlags?.hasVideo ?? null,
-            candidate_stream_has_audio: candidateFlags?.hasAudio ?? null,
-            candidate_stream_has_video: candidateFlags?.hasVideo ?? null,
-            agent_audio_track_missing_for_stream_recording: agentAudioMissing ? true : null
+            stream_recording_id: snapshot.activeRecordingId
           });
           this.enqueueRecordingSignal(meetingId, "recording_auto_started", {
             stream_recording_state: snapshot.state,
@@ -180,41 +101,9 @@ export class MeetingOrchestrator {
             stream_recording_id: snapshot.activeRecordingId
           });
           logger.info(
-            {
-              meetingId,
-              callType: snapshot.callType,
-              callId: snapshot.callId,
-              state: snapshot.state,
-              recordingId: snapshot.activeRecordingId,
-              attempt,
-              reason,
-              expectedAgentUserId,
-              expectedCandidateUserId,
-              agentHasAudio: agentFlags?.hasAudio ?? null,
-              agentHasVideo: agentFlags?.hasVideo ?? null,
-              candidateHasAudio: candidateFlags?.hasAudio ?? null,
-              candidateHasVideo: candidateFlags?.hasVideo ?? null
-            },
+            { meetingId, state: snapshot.state, recordingId: snapshot.activeRecordingId, attempt },
             "stream recording auto-start attempted"
           );
-          if (agentAudioMissing) {
-            logger.warn(
-              { meetingId, expectedAgentUserId, callType: snapshot.callType, callId: snapshot.callId },
-              "agent_audio_track_missing_for_stream_recording"
-            );
-          }
-          if (!agentPresent && expectedAgentUserId) {
-            logger.warn(
-              { meetingId, expectedAgentUserId, callType: snapshot.callType, callId: snapshot.callId },
-              "agent_participant_missing_for_stream_recording"
-            );
-          }
-          if (!candidatePresent) {
-            logger.warn(
-              { meetingId, expectedCandidateUserId, callType: snapshot.callType, callId: snapshot.callId },
-              "candidate_participant_missing_for_stream_recording"
-            );
-          }
           return;
         } catch (error) {
           const retryable =
@@ -222,46 +111,20 @@ export class MeetingOrchestrator {
             (error.code === "not_found" || error.code === "processing" || error.code === "no_active_session");
           if (retryable && attempt < maxAttempts) {
             // Call can exist, but recording may refuse to start until the first participant joins.
-            const nextDelayMs = backoff[attempt - 1];
-            logger.info(
-              {
-                meetingId,
-                callType: this.streamRecording!.getCallType(),
-                callId: meetingId,
-                attempt,
-                reason,
-                errorCode: error instanceof StreamRecordingStateError ? error.code : "unknown",
-                nextDelayMs
-              },
-              "stream recording start transient; scheduling retry"
-            );
-            this.updateRecordingMetadata(meetingId, {
-              stream_recording_state: "starting",
-              stream_recording_start_attempts: attempt,
-              stream_recording_start_reason: reason
-            });
-            await new Promise((resolve) => setTimeout(resolve, nextDelayMs));
+            await new Promise((resolve) => setTimeout(resolve, backoff[attempt - 1]));
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);
           this.updateRecordingMetadata(meetingId, {
             stream_recording_state: "failed",
-            stream_recording_error: message,
-            stream_recording_last_error: message,
-            stream_recording_start_attempts: attempt,
-            stream_recording_start_reason: reason
+            stream_recording_error: message
           });
-          logger.warn(
-            { meetingId, callType: this.streamRecording!.getCallType(), callId: meetingId, error: message, attempt, reason },
-            "stream recording auto-start failed"
-          );
+          logger.warn({ meetingId, error: message, attempt }, "stream recording auto-start failed");
           return;
         }
       }
     };
-    void tryStart().finally(() => {
-      this.recordingKickoffInFlight.delete(meetingId);
-    });
+    void tryStart();
   }
 
   private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
@@ -269,10 +132,18 @@ export class MeetingOrchestrator {
       return;
     }
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
-    const prompt = buildJobAiInterviewPromptFromMetadata(input.metadata as Record<string, unknown> | undefined);
+    const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
+    const candidateName =
+      typeof interviewContext.candidateName === "string"
+        ? (interviewContext.candidateName as string)
+        : undefined;
+    const jobTitle =
+      typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
+
+    const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
     const agentUserId = `agent_${sessionId}`;
     const candidateUserId = `candidate-${meeting.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
-    const agentDisplayName = prompt.context.jobTitle ? `HR · ${prompt.context.jobTitle}` : "HR ассистент";
+    const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
 
     this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
 
@@ -286,7 +157,7 @@ export class MeetingOrchestrator {
             agentUserId,
             agentDisplayName,
             candidateUserId,
-            candidateDisplayName: prompt.context.candidateName ?? "Candidate"
+            candidateDisplayName: candidateName ?? "Candidate"
           })
           .then(() => {
             logger.info(
@@ -302,7 +173,7 @@ export class MeetingOrchestrator {
           meetingId: meeting.meetingId,
           sessionId,
           agentDisplayName,
-          openaiInstructions: prompt.instructions,
+          openaiInstructions: instructions,
           candidateUserId
         })
       )
@@ -338,112 +209,6 @@ export class MeetingOrchestrator {
       });
   }
 
-  private kickoffAgentPublisher(meeting: MeetingRecord, input: StartMeetingInput): void {
-    const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
-    const agentUserId = `agent_${sessionId}`;
-    const prompt = buildJobAiInterviewPromptFromMetadata(input.metadata as Record<string, unknown> | undefined);
-    const {
-      hasCandidateName,
-      hasCompany,
-      hasPosition,
-      hasVacancy,
-      hasGreeting,
-      questionsCount,
-      currentQuestionIndex
-    } = prompt.diagnostics;
-
-    if (this.streamOpenAiAgent?.isEnabled()) {
-      if (!prompt.hasRequiredContext) {
-        const errorCode = "missing_interview_context";
-        this.updateRecordingMetadata(meeting.meetingId, {
-          agent_transport: "stream_openai",
-          agent_user_id: agentUserId,
-          agent_state: "failed",
-          agent_last_error: errorCode
-        });
-        logger.warn(
-          {
-            meetingId: meeting.meetingId,
-            jobAiId: typeof (meeting.metadata as any)?.jobAiInterviewId === "number" ? (meeting.metadata as any).jobAiInterviewId : null,
-            hasCandidateName,
-            hasCompany,
-            hasPosition,
-            hasVacancy,
-            hasGreeting,
-            questionsCount,
-            currentQuestionIndex
-          },
-          "stream openai agent missing context"
-        );
-        this.updateRecordingMetadata(meeting.meetingId, {
-          avatar_pod_skipped_reason: "stream_openai_agent_enabled"
-        });
-        return;
-      }
-
-      logger.info(
-        {
-          meetingId: meeting.meetingId,
-          jobAiId: typeof (meeting.metadata as any)?.jobAiInterviewId === "number" ? (meeting.metadata as any).jobAiInterviewId : null,
-          hasCandidateName,
-          hasCompany,
-          hasPosition,
-          hasVacancy,
-          hasGreeting,
-          questionsCount,
-          currentQuestionIndex
-        },
-        "stream openai agent context loaded"
-      );
-
-      this.updateRecordingMetadata(meeting.meetingId, {
-        agent_transport: "stream_openai",
-        agent_user_id: agentUserId,
-        agent_state: "connecting",
-        agent_last_error: null
-      });
-      void this.streamOpenAiAgent
-        .connectAgentToCall({
-          meetingId: meeting.meetingId,
-          sessionId,
-          jobAiId:
-            typeof (meeting.metadata as any)?.jobAiInterviewId === "number"
-              ? ((meeting.metadata as any).jobAiInterviewId as number)
-              : null,
-          callType: this.streamRecording?.getCallType() ?? "default",
-          callId: meeting.meetingId,
-          agentUserId,
-          instructions: prompt.instructions
-        })
-        .then((result) => {
-          this.updateRecordingMetadata(meeting.meetingId, {
-            agent_transport: "stream_openai",
-            agent_user_id: result.agentUserId,
-            agent_state: result.state,
-            agent_connected_at: typeof result.connectedAt === "number" ? result.connectedAt : null,
-            agent_last_error: result.error ?? null
-          });
-        })
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.updateRecordingMetadata(meeting.meetingId, {
-            agent_transport: "stream_openai",
-            agent_user_id: agentUserId,
-            agent_state: "failed",
-            agent_last_error: message
-          });
-        });
-      // Legacy avatar pod is skipped when Stream agent is enabled.
-      this.updateRecordingMetadata(meeting.meetingId, {
-        avatar_pod_skipped_reason: "stream_openai_agent_enabled"
-      });
-      return;
-    }
-
-    // Legacy path: avatar pod (kept as fallback/dev only).
-    this.kickoffAvatar(meeting, input);
-  }
-
   private composeOpeningInstructions(jobTitle?: string, candidateName?: string): string {
     const role = jobTitle ?? "позицию в нашей команде";
     const greeting = candidateName ? `${candidateName}, добрый день!` : "Добрый день!";
@@ -468,8 +233,6 @@ export class MeetingOrchestrator {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
-    void this.streamOpenAiAgent?.disconnectAgent(meetingId, "meeting_stop");
-    this.updateRecordingMetadata(meetingId, { agent_state: "closed" });
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -519,8 +282,6 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
-    void this.streamOpenAiAgent?.disconnectAgent(meetingId, "meeting_fail");
-    this.updateRecordingMetadata(meetingId, { agent_state: "closed" });
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -606,10 +367,6 @@ export class MeetingOrchestrator {
       granted: result.granted,
       reason: result.reason
     });
-    if (result.granted) {
-      // “Dogоняющий” старт записи: кандидат начал подключение к Stream call.
-      this.nudgeRecordingStart(meetingId, "candidate_admission_granted");
-    }
     return result;
   }
 
