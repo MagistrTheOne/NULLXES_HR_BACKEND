@@ -257,10 +257,22 @@ export function createMeetingRouter(
       stream_recording_url: withUrl?.url,
       stream_recording_filename: withUrl?.filename
     });
+    const meta = orchestrator.getMeeting(meetingId).meeting.metadata ?? {};
     res.status(200).json({
       configured: true,
       ...snapshot,
-      callType: callType ?? snapshot.callType
+      callType: callType ?? snapshot.callType,
+      diagnostics: {
+        streamRecordingUrl: typeof meta.stream_recording_url === "string" ? meta.stream_recording_url : null,
+        recordingStartAttempts: typeof meta.stream_recording_start_attempts === "number" ? meta.stream_recording_start_attempts : null,
+        lastRecordingError:
+          typeof meta.stream_recording_last_error === "string"
+            ? meta.stream_recording_last_error
+            : typeof meta.stream_recording_error === "string"
+              ? meta.stream_recording_error
+              : null,
+        recordingState: typeof meta.stream_recording_state === "string" ? meta.stream_recording_state : snapshot.state
+      }
     });
   }));
 

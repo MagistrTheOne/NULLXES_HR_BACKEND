@@ -99,6 +99,10 @@ export class StreamRecordingService {
     return Boolean(this.apiKey && this.apiSecret);
   }
 
+  getCallType(): string {
+    return this.callType;
+  }
+
   /**
    * Ensure call type recording settings are aligned with product defaults.
    * This is idempotent on Stream's side and safe to call repeatedly.

@@ -38,6 +38,9 @@ export interface MeetingOrchestratorAvatarDeps {
 }
 
 export class MeetingOrchestrator {
+  private recordingKickoffInFlight = new Set<string>();
+  private recordingSettingsEnsured = false;
+
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
@@ -63,7 +66,8 @@ export class MeetingOrchestrator {
     // post back to /avatar/events when it is ready, and the frontend polls
     // /avatar/state/:meetingId to know when to render the live tile.
     this.kickoffAvatar(meeting, input);
-    this.kickoffRecording(meeting.meetingId);
+    // Best-effort: may be too early (no active session yet). Candidate admission will nudge again.
+    this.kickoffRecording(meeting.meetingId, "meeting_start");
 
     return {
       meeting,
@@ -71,17 +75,28 @@ export class MeetingOrchestrator {
     };
   }
 
-  private kickoffRecording(meetingId: string): void {
+  /** Best-effort “nudge” to start Stream recording once call becomes active. */
+  nudgeRecordingStart(meetingId: string, reason: string): void {
+    this.kickoffRecording(meetingId, reason);
+  }
+
+  private kickoffRecording(meetingId: string, reason: string): void {
     if (!this.streamRecording || !this.streamRecording.isConfigured()) {
       return;
     }
+    if (this.recordingKickoffInFlight.has(meetingId)) {
+      return;
+    }
+    this.recordingKickoffInFlight.add(meetingId);
     const tryStart = async (): Promise<void> => {
-      // Align Stream call type recording settings with product defaults.
-      // This is safe to re-run, but we don't want it to block meeting start.
-      await this.streamRecording!.ensureCallTypeRecordingSettings().catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ meetingId, error: message }, "stream recording call type settings update failed");
-      });
+      // Align Stream call type recording settings with product defaults (once per process).
+      if (!this.recordingSettingsEnsured) {
+        await this.streamRecording!.ensureCallTypeRecordingSettings().catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn({ meetingId, error: message }, "stream recording call type settings update failed");
+        });
+        this.recordingSettingsEnsured = true;
+      }
 
       const backoff = [2_000, 4_000, 8_000, 15_000, 15_000] as const;
       const maxAttempts = backoff.length;
@@ -92,7 +107,10 @@ export class MeetingOrchestrator {
             stream_recording_state: snapshot.state,
             stream_call_id: snapshot.callId,
             stream_call_type: snapshot.callType,
-            stream_recording_id: snapshot.activeRecordingId
+            stream_recording_id: snapshot.activeRecordingId,
+            stream_recording_start_attempts: attempt,
+            stream_recording_start_reason: reason,
+            stream_recording_last_error: null
           });
           this.enqueueRecordingSignal(meetingId, "recording_auto_started", {
             stream_recording_state: snapshot.state,
@@ -101,7 +119,15 @@ export class MeetingOrchestrator {
             stream_recording_id: snapshot.activeRecordingId
           });
           logger.info(
-            { meetingId, state: snapshot.state, recordingId: snapshot.activeRecordingId, attempt },
+            {
+              meetingId,
+              callType: snapshot.callType,
+              callId: snapshot.callId,
+              state: snapshot.state,
+              recordingId: snapshot.activeRecordingId,
+              attempt,
+              reason
+            },
             "stream recording auto-start attempted"
           );
           return;
@@ -111,20 +137,46 @@ export class MeetingOrchestrator {
             (error.code === "not_found" || error.code === "processing" || error.code === "no_active_session");
           if (retryable && attempt < maxAttempts) {
             // Call can exist, but recording may refuse to start until the first participant joins.
-            await new Promise((resolve) => setTimeout(resolve, backoff[attempt - 1]));
+            const nextDelayMs = backoff[attempt - 1];
+            logger.info(
+              {
+                meetingId,
+                callType: this.streamRecording!.getCallType(),
+                callId: meetingId,
+                attempt,
+                reason,
+                errorCode: error instanceof StreamRecordingStateError ? error.code : "unknown",
+                nextDelayMs
+              },
+              "stream recording start transient; scheduling retry"
+            );
+            this.updateRecordingMetadata(meetingId, {
+              stream_recording_state: "starting",
+              stream_recording_start_attempts: attempt,
+              stream_recording_start_reason: reason
+            });
+            await new Promise((resolve) => setTimeout(resolve, nextDelayMs));
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);
           this.updateRecordingMetadata(meetingId, {
             stream_recording_state: "failed",
-            stream_recording_error: message
+            stream_recording_error: message,
+            stream_recording_last_error: message,
+            stream_recording_start_attempts: attempt,
+            stream_recording_start_reason: reason
           });
-          logger.warn({ meetingId, error: message, attempt }, "stream recording auto-start failed");
+          logger.warn(
+            { meetingId, callType: this.streamRecording!.getCallType(), callId: meetingId, error: message, attempt, reason },
+            "stream recording auto-start failed"
+          );
           return;
         }
       }
     };
-    void tryStart();
+    void tryStart().finally(() => {
+      this.recordingKickoffInFlight.delete(meetingId);
+    });
   }
 
   private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
@@ -367,6 +419,10 @@ export class MeetingOrchestrator {
       granted: result.granted,
       reason: result.reason
     });
+    if (result.granted) {
+      // “Dogоняющий” старт записи: кандидат начал подключение к Stream call.
+      this.nudgeRecordingStart(meetingId, "candidate_admission_granted");
+    }
     return result;
   }
 
