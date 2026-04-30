@@ -117,6 +117,7 @@ export class MeetingOrchestrator {
               ? (interviewContext.jobTitle as string)
               : undefined;
           const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
+          const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
 
           // Ensure Stream OpenAI agent joins the call before recording starts (best-effort).
           if (this.streamOpenAiAgent && expectedAgentUserId) {
@@ -128,7 +129,8 @@ export class MeetingOrchestrator {
               agentUserId: expectedAgentUserId,
               agentDisplayName,
               candidateUserId: expectedCandidateUserId,
-              candidateDisplayName: candidateName ?? "Candidate"
+              candidateDisplayName: candidateName ?? "Candidate",
+              instructions
             });
           }
 

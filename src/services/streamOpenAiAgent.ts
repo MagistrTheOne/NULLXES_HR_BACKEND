@@ -63,6 +63,7 @@ export class StreamOpenAiAgent {
     agentDisplayName?: string;
     candidateUserId?: string;
     candidateDisplayName?: string;
+    instructions?: string;
   }): Promise<void> {
     if (!this.isEnabledForMeeting(opts.metadata)) return;
 
@@ -112,6 +113,10 @@ export class StreamOpenAiAgent {
           if (maybeUpdateSession) {
             await maybeUpdateSession({
               voice: env.OPENAI_REALTIME_VOICE,
+              instructions:
+                typeof opts.instructions === "string" && opts.instructions.trim().length > 0
+                  ? opts.instructions
+                  : undefined,
               turn_detection: env.OPENAI_TURN_DETECTION_ENABLED
                 ? {
                     type: env.OPENAI_TURN_DETECTION_TYPE,
