@@ -186,6 +186,33 @@ export class StreamOpenAiAgentService {
         logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent updateSession failed");
       }
 
+      // Best-effort "kick" to ensure the agent starts with the provided instructions.
+      // Without an explicit response.create some sessions may stay idle or speak from a default prompt.
+      try {
+        const anyClient = realtimeClient as unknown as {
+          send?: (v: unknown) => unknown;
+          createResponse?: (v: unknown) => unknown;
+        };
+        const kickoffPayload = {
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            instructions:
+              `${input.instructions}\n\n` +
+              "СЕЙЧАС начни интервью: поздоровайся, назови компанию и вакансию из контекста, затем задай первый вопрос из списка. " +
+              "Не выдумывай вакансию/вопросы вне переданного контекста."
+          }
+        };
+        if (typeof anyClient.createResponse === "function") {
+          await anyClient.createResponse(kickoffPayload);
+        } else if (typeof anyClient.send === "function") {
+          await anyClient.send(kickoffPayload);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent kickoff response failed");
+      }
+
       // Best-effort event subscriptions (do not assume exact emitter API).
       try {
         const anyClient = realtimeClient as unknown as { on?: (event: string, cb: (...args: any[]) => void) => void };
