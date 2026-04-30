@@ -63,7 +63,7 @@ export class StreamOpenAiAgent {
     agentDisplayName?: string;
     candidateUserId?: string;
     candidateDisplayName?: string;
-    instructions?: string;
+    openaiInstructions?: string;
   }): Promise<void> {
     if (!this.isEnabledForMeeting(opts.metadata)) return;
 
@@ -106,17 +106,14 @@ export class StreamOpenAiAgent {
           validityInSeconds: env.STREAM_OPENAI_AGENT_VALIDITY_SECONDS
         });
 
-        // Best-effort session update for voice selection (non-fatal).
+        // Best-effort session update for voice + instructions (non-fatal).
         try {
           const maybeUpdateSession = (realtimeClient as unknown as { updateSession?: (v: unknown) => unknown })
             .updateSession;
           if (maybeUpdateSession) {
             await maybeUpdateSession({
               voice: env.OPENAI_REALTIME_VOICE,
-              instructions:
-                typeof opts.instructions === "string" && opts.instructions.trim().length > 0
-                  ? opts.instructions
-                  : undefined,
+              ...(opts.openaiInstructions ? { instructions: opts.openaiInstructions } : {}),
               turn_detection: env.OPENAI_TURN_DETECTION_ENABLED
                 ? {
                     type: env.OPENAI_TURN_DETECTION_TYPE,

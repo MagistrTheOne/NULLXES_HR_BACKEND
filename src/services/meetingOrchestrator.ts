@@ -117,7 +117,23 @@ export class MeetingOrchestrator {
               ? (interviewContext.jobTitle as string)
               : undefined;
           const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
-          const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
+          const openingInstructions = this.composeOpeningInstructions(jobTitle, candidateName);
+          const vacancyText =
+            typeof interviewContext.vacancyText === "string" ? (interviewContext.vacancyText as string) : undefined;
+          const companyName =
+            typeof interviewContext.companyName === "string" ? (interviewContext.companyName as string) : undefined;
+          const questions = Array.isArray(interviewContext.questions)
+            ? (interviewContext.questions as unknown[]).filter((q) => typeof q === "string").slice(0, 20)
+            : [];
+          const enrichedInstructions = [
+            openingInstructions,
+            companyName ? `Компания: ${companyName}.` : null,
+            jobTitle ? `Вакансия: ${jobTitle}.` : null,
+            vacancyText ? `Описание вакансии (контекст): ${vacancyText}` : null,
+            questions.length > 0 ? `Список вопросов (следуй им приоритетно):\n- ${questions.join("\n- ")}` : null
+          ]
+            .filter(Boolean)
+            .join("\n\n");
 
           // Ensure Stream OpenAI agent joins the call before recording starts (best-effort).
           if (this.streamOpenAiAgent && expectedAgentUserId) {
@@ -130,7 +146,7 @@ export class MeetingOrchestrator {
               agentDisplayName,
               candidateUserId: expectedCandidateUserId,
               candidateDisplayName: candidateName ?? "Candidate",
-              instructions
+              openaiInstructions: enrichedInstructions
             });
           }
 
