@@ -76,7 +76,15 @@ export class MeetingOrchestrator {
       return;
     }
     const tryStart = async (): Promise<void> => {
-      const maxAttempts = 12;
+      // Align Stream call type recording settings with product defaults.
+      // This is safe to re-run, but we don't want it to block meeting start.
+      await this.streamRecording!.ensureCallTypeRecordingSettings().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ meetingId, error: message }, "stream recording call type settings update failed");
+      });
+
+      const backoff = [2_000, 4_000, 8_000, 15_000, 15_000] as const;
+      const maxAttempts = backoff.length;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           const snapshot = await this.streamRecording!.start(meetingId);
@@ -100,10 +108,10 @@ export class MeetingOrchestrator {
         } catch (error) {
           const retryable =
             error instanceof StreamRecordingStateError &&
-            (error.code === "not_found" || error.code === "processing");
+            (error.code === "not_found" || error.code === "processing" || error.code === "no_active_session");
           if (retryable && attempt < maxAttempts) {
-            // Stream call может появиться с задержкой после создания meeting.
-            await new Promise((resolve) => setTimeout(resolve, 2_000));
+            // Call can exist, but recording may refuse to start until the first participant joins.
+            await new Promise((resolve) => setTimeout(resolve, backoff[attempt - 1]));
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);

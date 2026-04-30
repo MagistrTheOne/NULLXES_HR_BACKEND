@@ -31,7 +31,7 @@ export type StreamRecordingSnapshot = {
 };
 
 export class StreamRecordingStateError extends Error {
-  readonly code: "not_recording" | "already_recording" | "processing" | "not_found";
+  readonly code: "not_recording" | "already_recording" | "processing" | "not_found" | "no_active_session";
   readonly status: number;
 
   constructor(code: StreamRecordingStateError["code"], status: number, message: string) {
@@ -97,6 +97,23 @@ export class StreamRecordingService {
 
   isConfigured(): boolean {
     return Boolean(this.apiKey && this.apiSecret);
+  }
+
+  /**
+   * Ensure call type recording settings are aligned with product defaults.
+   * This is idempotent on Stream's side and safe to call repeatedly.
+   */
+  async ensureCallTypeRecordingSettings(): Promise<void> {
+    await this.adminRequest("PUT", `/api/v2/video/calltypes/${encodeURIComponent(this.callType)}`, {
+      settings: {
+        recording: {
+          mode: "available",
+          audio_only: false,
+          quality: "720p",
+          layout: { name: "grid" }
+        }
+      }
+    });
   }
 
   async start(callId: string): Promise<StreamRecordingSnapshot> {
@@ -190,6 +207,9 @@ export class StreamRecordingService {
     if (status === 404) {
       return new StreamRecordingStateError("not_found", status, "Stream call not found");
     }
+    if (text.includes("no active session")) {
+      return new StreamRecordingStateError("no_active_session", status, "StartRecording failed: there is no active session");
+    }
     if (text.includes("already recording") || text.includes("recording already in progress")) {
       return new StreamRecordingStateError("already_recording", status, "Recording already started");
     }
@@ -202,7 +222,7 @@ export class StreamRecordingService {
     return null;
   }
 
-  private async adminRequest(method: "GET" | "POST", path: string): Promise<unknown> {
+  private async adminRequest(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<unknown> {
     const adminToken = mintStreamAdminToken({ apiSecret: this.apiSecret });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -215,6 +235,7 @@ export class StreamRecordingService {
           "stream-auth-type": "jwt",
           "Content-Type": "application/json"
         },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal
       });
       const text = await response.text();
