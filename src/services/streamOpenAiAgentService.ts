@@ -194,8 +194,8 @@ export class StreamOpenAiAgentService {
           createResponse?: () => unknown;
         };
         const kickoffText =
-          "Начни интервью СЕЙЧАС. Поздоровайся, назови компанию и вакансию ИЗ КОНТЕКСТА, затем задай первый вопрос из списка. " +
-          "Не выдумывай вакансию/вопросы вне переданного контекста.";
+          "Начни интервью сейчас. НЕ отвечай как общий ассистент и НЕ спрашивай «чем могу помочь». " +
+          "Следуй session instructions (JobAI сценарий). Скажи приветствие из блока JobAI и сразу задай первый вопрос из списка.";
         if (typeof anyClient.sendUserMessageContent === "function") {
           await anyClient.sendUserMessageContent([{ type: "input_text", text: kickoffText }]);
           logger.info({ meetingId: input.meetingId, agentUserId: input.agentUserId }, "stream openai agent kickoff sent");
