@@ -20,6 +20,7 @@ import type {
 } from "../types/meeting";
 import { AvatarClient, AvatarServiceUnavailableError } from "./avatarClient";
 import type { AvatarStateStore } from "./avatarStateStore";
+import { buildJobAiInterviewPromptFromMetadata } from "./jobAiInterviewPrompt";
 import { MeetingStateMachine } from "./meetingStateMachine";
 import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
@@ -268,18 +269,10 @@ export class MeetingOrchestrator {
       return;
     }
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
-    const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
-    const candidateName =
-      typeof interviewContext.candidateName === "string"
-        ? (interviewContext.candidateName as string)
-        : undefined;
-    const jobTitle =
-      typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
-
-    const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
+    const prompt = buildJobAiInterviewPromptFromMetadata(input.metadata as Record<string, unknown> | undefined);
     const agentUserId = `agent_${sessionId}`;
     const candidateUserId = `candidate-${meeting.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
-    const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
+    const agentDisplayName = prompt.context.jobTitle ? `HR · ${prompt.context.jobTitle}` : "HR ассистент";
 
     this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
 
@@ -293,7 +286,7 @@ export class MeetingOrchestrator {
             agentUserId,
             agentDisplayName,
             candidateUserId,
-            candidateDisplayName: candidateName ?? "Candidate"
+            candidateDisplayName: prompt.context.candidateName ?? "Candidate"
           })
           .then(() => {
             logger.info(
@@ -309,7 +302,7 @@ export class MeetingOrchestrator {
           meetingId: meeting.meetingId,
           sessionId,
           agentDisplayName,
-          openaiInstructions: instructions,
+          openaiInstructions: prompt.instructions,
           candidateUserId
         })
       )
@@ -348,69 +341,19 @@ export class MeetingOrchestrator {
   private kickoffAgentPublisher(meeting: MeetingRecord, input: StartMeetingInput): void {
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
     const agentUserId = `agent_${sessionId}`;
-    const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
-    const candidateName = (() => {
-      const direct = typeof interviewContext.candidateName === "string" ? interviewContext.candidateName.trim() : "";
-      if (direct) return direct;
-      const full =
-        typeof interviewContext.candidateFullName === "string" ? interviewContext.candidateFullName.trim() : "";
-      if (full) return full;
-      const first =
-        typeof interviewContext.candidateFirstName === "string" ? interviewContext.candidateFirstName.trim() : "";
-      const last =
-        typeof interviewContext.candidateLastName === "string" ? interviewContext.candidateLastName.trim() : "";
-      const combined = [first, last].filter(Boolean).join(" ").trim();
-      return combined || undefined;
-    })();
-    const jobTitle = typeof interviewContext.jobTitle === "string" ? interviewContext.jobTitle.trim() : "";
-    const safeJobTitle = jobTitle || undefined;
-    const vacancyText =
-      typeof interviewContext.vacancyText === "string" ? interviewContext.vacancyText.trim() : "";
-    const safeVacancyText = vacancyText || undefined;
-    const companyName = typeof interviewContext.companyName === "string" ? interviewContext.companyName.trim() : "";
-    const safeCompanyName = companyName || undefined;
-    const greetingSpeechRaw = typeof interviewContext.greetingSpeech === "string" ? interviewContext.greetingSpeech.trim() : "";
-    const safeGreetingSpeech = greetingSpeechRaw || undefined;
-    const finalSpeechRaw = typeof interviewContext.finalSpeech === "string" ? interviewContext.finalSpeech.trim() : "";
-    const safeFinalSpeech = finalSpeechRaw || undefined;
-    const questions = (() => {
-      if (!Array.isArray(interviewContext.questions)) return [];
-      const out: Array<{ order: number; text: string }> = [];
-      for (const q of interviewContext.questions as unknown[]) {
-        if (typeof q === "string") {
-          const t = q.trim();
-          if (t) out.push({ order: out.length + 1, text: t });
-          continue;
-        }
-        if (q && typeof q === "object") {
-          const text = (q as Record<string, unknown>).text;
-          const order = (q as Record<string, unknown>).order;
-          if (typeof text === "string") {
-            const t = text.trim();
-            if (t) {
-              out.push({
-                order: typeof order === "number" && Number.isFinite(order) ? order : out.length + 1,
-                text: t
-              });
-            }
-          }
-        }
-        if (out.length >= 30) break;
-      }
-      return out
-        .sort((a, b) => a.order - b.order)
-        .slice(0, 20);
-    })();
-    const questionsCount = questions.length;
-    const hasCandidateName = Boolean(candidateName);
-    const hasCompany = Boolean(safeCompanyName);
-    const hasPosition = Boolean(safeJobTitle);
-    const hasVacancy = Boolean(safeVacancyText);
-    const hasGreeting = Boolean(safeGreetingSpeech);
-    const currentQuestionIndex = 0;
+    const prompt = buildJobAiInterviewPromptFromMetadata(input.metadata as Record<string, unknown> | undefined);
+    const {
+      hasCandidateName,
+      hasCompany,
+      hasPosition,
+      hasVacancy,
+      hasGreeting,
+      questionsCount,
+      currentQuestionIndex
+    } = prompt.diagnostics;
 
     if (this.streamOpenAiAgent?.isEnabled()) {
-      if (questionsCount <= 0) {
+      if (!prompt.hasRequiredContext) {
         const errorCode = "missing_interview_context";
         this.updateRecordingMetadata(meeting.meetingId, {
           agent_transport: "stream_openai",
@@ -453,51 +396,6 @@ export class MeetingOrchestrator {
         "stream openai agent context loaded"
       );
 
-      const greeting =
-        safeGreetingSpeech ??
-        [
-          candidateName ? `Здравствуйте, ${candidateName}.` : "Здравствуйте.",
-          safeJobTitle ? `Это интервью на позицию ${safeJobTitle}.` : null,
-          safeCompanyName ? `Компания: ${safeCompanyName}.` : null,
-          "Вы готовы пройти интервью?"
-        ]
-          .filter(Boolean)
-          .join(" ");
-
-      const questionsBlock = questions.map((q, idx) => `${idx + 1}. [order=${q.order}] ${q.text}`).join("\n");
-
-      const instructions = [
-        "# Роль",
-        "Ты — HR-интервьюер JobAI. Ты НЕ общий ассистент и НЕ саппорт.",
-        "Запрещено говорить или спрашивать: «чем могу помочь», «как могу помочь», «как я могу вам помочь», «что вас интересует».",
-        "Ты уже находишься внутри интервью и ведёшь собеседование по сценарию ниже.",
-        "",
-        "# Язык",
-        "Всегда говори на русском языке. Запрещено переключаться на английский/китайский без явной просьбы кандидата.",
-        "",
-        "# Правила интервью",
-        "- Используй ТОЛЬКО вопросы из списка ниже. Не придумывай свои вопросы.",
-        "- Не объявляй номера вопросов вслух («вопрос X из Y» запрещено).",
-        "- Текущий вопрос: индекс = 0 (первый), если система не сказала иначе.",
-        "- Если кандидат отвечает — коротко поблагодари и переходи к следующему вопросу по списку.",
-        "",
-        "# Контекст",
-        hasCandidateName ? "Имя кандидата присутствует (используй в приветствии 1 раз)." : "Имя кандидата не передано — обращайся нейтрально.",
-        safeCompanyName ? `Компания: ${safeCompanyName}` : "Компания: не передана",
-        safeJobTitle ? `Позиция: ${safeJobTitle}` : "Позиция: не передана",
-        safeVacancyText ? `Описание вакансии:\n${safeVacancyText}` : "Описание вакансии: не передано",
-        "",
-        "# Приветствие (JobAI) — произнести дословно и без отсебятины",
-        greeting,
-        "",
-        "# Вопросы (order) — задавай строго по порядку",
-        questionsBlock,
-        "",
-        safeFinalSpeech ? `# Финальная фраза (JobAI)\n${safeFinalSpeech}` : ""
-      ]
-        .filter(Boolean)
-        .join("\n");
-
       this.updateRecordingMetadata(meeting.meetingId, {
         agent_transport: "stream_openai",
         agent_user_id: agentUserId,
@@ -515,7 +413,7 @@ export class MeetingOrchestrator {
           callType: this.streamRecording?.getCallType() ?? "default",
           callId: meeting.meetingId,
           agentUserId,
-          instructions
+          instructions: prompt.instructions
         })
         .then((result) => {
           this.updateRecordingMetadata(meeting.meetingId, {
