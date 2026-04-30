@@ -213,32 +213,6 @@ export class StreamOpenAiAgentService {
         logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent updateSession failed");
       }
 
-      // Best-effort "kick" to ensure the agent starts speaking from JobAI instructions.
-      // Correct API for OpenAI reference client is sendUserMessageContent([...]) which triggers createResponse().
-      try {
-        const anyClient = realtimeClient as unknown as {
-          sendUserMessageContent?: (content: Array<{ type: string; text?: string }>) => unknown;
-          createResponse?: () => unknown;
-        };
-        const kickoffText =
-          "Начни интервью сейчас. НЕ отвечай как общий ассистент и НЕ спрашивай «чем могу помочь». " +
-          "Следуй session instructions (JobAI сценарий). Скажи приветствие из блока JobAI и сразу задай первый вопрос из списка.";
-        if (typeof anyClient.sendUserMessageContent === "function") {
-          await anyClient.sendUserMessageContent([{ type: "input_text", text: kickoffText }]);
-          logger.info({ meetingId: input.meetingId, agentUserId: input.agentUserId }, "stream openai agent kickoff sent");
-        } else if (typeof anyClient.createResponse === "function") {
-          // Fallback: force a response generation based on session instructions only.
-          await anyClient.createResponse();
-          logger.info(
-            { meetingId: input.meetingId, agentUserId: input.agentUserId, note: "createResponse fallback" },
-            "stream openai agent kickoff sent"
-          );
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ meetingId: input.meetingId, error: message }, "stream openai agent kickoff failed");
-      }
-
       // Best-effort event subscriptions (do not assume exact emitter API).
       try {
         const anyClient = realtimeClient as unknown as { on?: (event: string, cb: (...args: any[]) => void) => void };
