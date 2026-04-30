@@ -173,6 +173,10 @@ export class StreamRecordingService {
    * This is idempotent on Stream's side and safe to call repeatedly.
    */
   async ensureCallTypeRecordingSettings(): Promise<void> {
+    // NOTE:
+    // - external_css_url customizes recording visuals only.
+    //   It does not route browser OpenAI/ElevenLabs audio into Stream recording.
+    // - participant filter controls who is visible in the layout; it cannot create missing audio tracks.
     await this.adminRequest("PUT", `/api/v2/video/calltypes/${encodeURIComponent(this.callType)}`, {
       settings: {
         recording: {

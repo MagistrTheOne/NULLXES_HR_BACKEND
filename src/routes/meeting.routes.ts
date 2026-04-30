@@ -272,6 +272,17 @@ export function createMeetingRouter(
               ? meta.stream_recording_error
               : null,
         recordingState: typeof meta.stream_recording_state === "string" ? meta.stream_recording_state : snapshot.state,
+        warning: typeof meta.stream_recording_warning === "string" ? meta.stream_recording_warning : null,
+        agent: {
+          present: meta.agent_stream_present === true ? true : meta.agent_stream_present === false ? false : null,
+          hasAudio: typeof meta.agent_stream_has_audio === "boolean" ? meta.agent_stream_has_audio : null,
+          hasVideo: typeof meta.agent_stream_has_video === "boolean" ? meta.agent_stream_has_video : null
+        },
+        candidate: {
+          present: meta.candidate_stream_present === true ? true : meta.candidate_stream_present === false ? false : null,
+          hasAudio: typeof meta.candidate_stream_has_audio === "boolean" ? meta.candidate_stream_has_audio : null,
+          hasVideo: typeof meta.candidate_stream_has_video === "boolean" ? meta.candidate_stream_has_video : null
+        },
         agentHasAudio: typeof meta.agent_stream_has_audio === "boolean" ? meta.agent_stream_has_audio : null,
         agentHasVideo: typeof meta.agent_stream_has_video === "boolean" ? meta.agent_stream_has_video : null,
         candidateHasAudio: typeof meta.candidate_stream_has_audio === "boolean" ? meta.candidate_stream_has_audio : null,

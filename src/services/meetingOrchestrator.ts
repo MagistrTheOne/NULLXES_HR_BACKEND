@@ -154,8 +154,20 @@ export class MeetingOrchestrator {
           const media = this.streamRecording!.extractParticipantMedia(snapshot.providerRaw);
           const agentFlags = expectedAgentUserId ? media[expectedAgentUserId] : undefined;
           const candidateFlags = media[expectedCandidateUserId];
+          const agentPresent = Boolean(expectedAgentUserId && Object.prototype.hasOwnProperty.call(media, expectedAgentUserId));
+          const candidatePresent = Boolean(Object.prototype.hasOwnProperty.call(media, expectedCandidateUserId));
           const agentAudioMissing =
             Boolean(expectedAgentUserId) && (!agentFlags || agentFlags.hasAudio !== true);
+          const warning =
+            !expectedAgentUserId
+              ? null
+              : !agentPresent
+                ? "agent_participant_missing_for_stream_recording"
+                : agentAudioMissing
+                  ? "agent_audio_track_missing_for_stream_recording"
+                  : !candidatePresent
+                    ? "candidate_participant_missing_for_stream_recording"
+                    : null;
 
           this.updateRecordingMetadata(meetingId, {
             stream_recording_state: snapshot.state,
@@ -165,6 +177,9 @@ export class MeetingOrchestrator {
             stream_recording_start_attempts: attempt,
             stream_recording_start_reason: reason,
             stream_recording_last_error: null,
+            stream_recording_warning: warning,
+            agent_stream_present: agentPresent ? true : null,
+            candidate_stream_present: candidatePresent ? true : null,
             agent_stream_has_audio: agentFlags?.hasAudio ?? null,
             agent_stream_has_video: agentFlags?.hasVideo ?? null,
             candidate_stream_has_audio: candidateFlags?.hasAudio ?? null,
@@ -199,6 +214,18 @@ export class MeetingOrchestrator {
             logger.warn(
               { meetingId, expectedAgentUserId, callType: snapshot.callType, callId: snapshot.callId },
               "agent_audio_track_missing_for_stream_recording"
+            );
+          }
+          if (!agentPresent && expectedAgentUserId) {
+            logger.warn(
+              { meetingId, expectedAgentUserId, callType: snapshot.callType, callId: snapshot.callId },
+              "agent_participant_missing_for_stream_recording"
+            );
+          }
+          if (!candidatePresent) {
+            logger.warn(
+              { meetingId, expectedCandidateUserId, callType: snapshot.callType, callId: snapshot.callId },
+              "candidate_participant_missing_for_stream_recording"
             );
           }
           return;
