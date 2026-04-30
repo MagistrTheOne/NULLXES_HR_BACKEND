@@ -178,6 +178,9 @@ export async function createApp(): Promise<AppContext> {
     app.use(metrics.middleware);
   }
 
+  // Serve post-processing artifacts (best-effort; directory must exist on host).
+  app.use("/artifacts", express.static(env.ARTIFACTS_DIR, { fallthrough: true }));
+
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req: Request, res: Response) => {

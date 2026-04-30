@@ -2,8 +2,10 @@ import express, { type Request, type Response } from "express";
 import { z } from "zod";
 import { HttpError } from "../middleware/errorHandler";
 import { logger } from "../logging/logger";
+import { env } from "../config/env";
 import { MeetingOrchestrator } from "../services/meetingOrchestrator";
 import type { InterviewSyncService } from "../services/interviewSyncService";
+import { saveAssistantAudioArtifact } from "../services/assistantAudioArtifacts";
 import { StreamRecordingStateError, type StreamRecordingService } from "../services/streamRecordingService";
 import type { FailMeetingInput, StartMeetingInput, StopMeetingInput } from "../types/meeting";
 
@@ -89,6 +91,39 @@ export function createMeetingRouter(
   }
 ): express.Router {
   const router = express.Router();
+
+  router.post(
+    "/:meetingId/artifacts/assistant-audio",
+    express.raw({ type: "*/*", limit: env.ASSISTANT_AUDIO_MAX_BYTES }),
+    asyncHandler(async (req: Request, res: Response) => {
+      const meetingId = req.params.meetingId;
+      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream";
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? "");
+      if (!bytes.byteLength) {
+        throw new HttpError(400, "assistant_audio_empty");
+      }
+      const saved = await saveAssistantAudioArtifact({ meetingId, bytes, contentType });
+      orchestrator.updateRecordingMetadata(meetingId, {
+        assistant_audio_url: saved.publicUrlPath,
+        assistant_audio_filename: saved.filename,
+        assistant_audio_bytes: saved.bytes,
+        assistant_audio_content_type: saved.contentType
+      });
+      logger.info(
+        { meetingId, bytes: saved.bytes, filename: saved.filename },
+        "assistant audio artifact saved"
+      );
+      res.status(201).json({
+        ok: true,
+        artifact: {
+          url: saved.publicUrlPath,
+          filename: saved.filename,
+          bytes: saved.bytes,
+          contentType: saved.contentType
+        }
+      });
+    })
+  );
 
   router.post("/start", asyncHandler(async (req: Request, res: Response) => {
     const input = parseBody<StartMeetingInput>(startMeetingSchema, req.body);

@@ -29,6 +29,14 @@ export class PostMeetingProcessor {
     }
 
     this.queuedMeetings.add(meeting.meetingId);
+    const refs: string[] = [];
+    const meta = meeting.metadata ?? {};
+    if (typeof meta.stream_recording_url === "string" && meta.stream_recording_url.trim()) {
+      refs.push(meta.stream_recording_url.trim());
+    }
+    if (typeof meta.assistant_audio_url === "string" && meta.assistant_audio_url.trim()) {
+      refs.push(meta.assistant_audio_url.trim());
+    }
     const payload: MeetingPostProcessingPayload = {
       eventType: "meeting.post_processing.completed",
       schemaVersion: meeting.schemaVersion,
@@ -36,7 +44,7 @@ export class PostMeetingProcessor {
       sessionId: meeting.sessionId,
       timestampMs: Date.now(),
       summary: "Meeting completed. Post-processing artifact package queued.",
-      transcriptReferences: []
+      transcriptReferences: refs
     };
     const idempotencyKey = `${meeting.meetingId}:post-processing:${payload.timestampMs}`;
     this.outbox.enqueue(payload, idempotencyKey);

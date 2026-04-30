@@ -68,7 +68,10 @@ const envSchema = z.object({
   STREAM_API_KEY: z.string().min(1).optional(),
   STREAM_API_SECRET: z.string().min(1).optional(),
   STREAM_BASE_URL: z.string().url().default("https://video.stream-io-api.com"),
-  STREAM_CALL_TYPE: z.string().min(1).default("default")
+  STREAM_CALL_TYPE: z.string().min(1).default("default"),
+  // Post-processing artifacts (assistant audio capture + optional merge)
+  ARTIFACTS_DIR: z.string().min(1).default("/var/lib/nullxes-hr/artifacts"),
+  ASSISTANT_AUDIO_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000)
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {

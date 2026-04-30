@@ -221,7 +221,7 @@ export class MeetingOrchestrator {
     const finalStatus = input.finalStatus ?? "stopped_during_meeting";
     const transition = this.transition(meetingId, finalStatus, input.reason, input.metadata);
     const meeting = this.requireMeeting(meetingId);
-    if (finalStatus === "completed") {
+    if (finalStatus === "completed" || finalStatus === "stopped_during_meeting") {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
