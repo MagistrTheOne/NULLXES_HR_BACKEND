@@ -45,6 +45,8 @@ const envSchema = z.object({
   RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
   RATE_LIMIT_TRUST_PROXY: z.coerce.boolean().default(true),
   CANDIDATE_ADMISSION_REJOIN_WINDOW_MS: z.coerce.number().int().positive().default(60000),
+  MEETING_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(14_400_000),
+  MEETING_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   // M3: signed candidate / spectator join links
   // JOIN_TOKEN_SECRET is required only when join-link issuance is in use; we keep
   // it optional in the schema so existing droplet boots don't break before the
