@@ -170,10 +170,13 @@ export class StreamOpenAiAgentService {
 
       // Best-effort updateSession (non-fatal)
       try {
+        // IMPORTANT: do NOT extract updateSession into a variable without binding.
+        // Some client implementations rely on `this.sessionConfig` and will throw
+        // if called unbound (e.g. "Cannot read properties of undefined (reading 'sessionConfig')").
         const maybeUpdateSession = (realtimeClient as unknown as { updateSession?: (v: unknown) => unknown })
           .updateSession;
-        if (maybeUpdateSession) {
-          await maybeUpdateSession({
+        if (typeof maybeUpdateSession === "function") {
+          await (maybeUpdateSession as (this: unknown, v: unknown) => unknown).call(realtimeClient, {
             instructions: input.instructions,
             voice: input.voice ?? resolveVoice()
           });
