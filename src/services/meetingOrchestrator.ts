@@ -25,6 +25,7 @@ import { InMemoryMeetingStore } from "./meetingStore";
 import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
+import type { StreamOpenAiAgent } from "./streamOpenAiAgent";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
 
@@ -48,7 +49,8 @@ export class MeetingOrchestrator {
     private readonly postMeetingProcessor: PostMeetingProcessor,
     private readonly avatar?: MeetingOrchestratorAvatarDeps,
     private readonly runtimeEvents?: RuntimeEventStore,
-    private readonly streamRecording?: StreamRecordingService
+    private readonly streamRecording?: StreamRecordingService,
+    private readonly streamOpenAiAgent?: StreamOpenAiAgent
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -105,6 +107,30 @@ export class MeetingOrchestrator {
           const meeting = this.requireMeeting(meetingId);
           const expectedAgentUserId = meeting.sessionId ? `agent_${meeting.sessionId}` : null;
           const expectedCandidateUserId = `candidate-${meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+          const interviewContext = (meeting.metadata?.interviewContext ?? {}) as Record<string, unknown>;
+          const candidateName =
+            typeof interviewContext.candidateName === "string"
+              ? (interviewContext.candidateName as string)
+              : undefined;
+          const jobTitle =
+            typeof interviewContext.jobTitle === "string"
+              ? (interviewContext.jobTitle as string)
+              : undefined;
+          const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
+
+          // Ensure Stream OpenAI agent joins the call before recording starts (best-effort).
+          if (this.streamOpenAiAgent && expectedAgentUserId) {
+            await this.streamOpenAiAgent.ensureConnected({
+              meetingId,
+              metadata: meeting.metadata as Record<string, unknown> | undefined,
+              callType: this.streamRecording!.getCallType(),
+              callId: meetingId,
+              agentUserId: expectedAgentUserId,
+              agentDisplayName,
+              candidateUserId: expectedCandidateUserId,
+              candidateDisplayName: candidateName ?? "Candidate"
+            });
+          }
 
           const snapshot = await this.streamRecording!.start(meetingId);
           const media = this.streamRecording!.extractParticipantMedia(snapshot.providerRaw);
@@ -312,6 +338,7 @@ export class MeetingOrchestrator {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
+    void this.streamOpenAiAgent?.disconnect(meetingId, "meeting_stop");
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -361,6 +388,7 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
+    void this.streamOpenAiAgent?.disconnect(meetingId, "meeting_fail");
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }

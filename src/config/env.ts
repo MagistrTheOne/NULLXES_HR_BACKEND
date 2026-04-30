@@ -69,6 +69,9 @@ const envSchema = z.object({
   STREAM_API_SECRET: z.string().min(1).optional(),
   STREAM_BASE_URL: z.string().url().default("https://video.stream-io-api.com"),
   STREAM_CALL_TYPE: z.string().min(1).default("default"),
+  // Stream OpenAI agent: publish assistant audio as Stream participant track (for recording)
+  ENABLE_STREAM_OPENAI_AGENT: z.coerce.boolean().default(false),
+  STREAM_OPENAI_AGENT_VALIDITY_SECONDS: z.coerce.number().int().min(60).default(3600),
   // Post-processing artifacts (assistant audio capture + optional merge)
   ARTIFACTS_DIR: z.string().min(1).default("/var/lib/nullxes-hr/artifacts"),
   ASSISTANT_AUDIO_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000)
