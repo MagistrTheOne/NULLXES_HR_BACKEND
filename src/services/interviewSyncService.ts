@@ -141,7 +141,7 @@ export class InterviewSyncService {
         "jobai status transition: stream_call_id is missing; sending status update without call binding"
       );
     }
-    const updated = await this.jobAiClient.updateInterviewStatus(jobAiId, status, isTerminal ? { stream_call_id, stream_call_type } : undefined);
+    const updated = await this.jobAiClient.updateInterviewStatus(jobAiId, status, { stream_call_id, stream_call_type });
     return this.store.upsert(updated);
   }
 

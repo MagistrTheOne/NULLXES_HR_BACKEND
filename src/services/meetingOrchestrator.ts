@@ -523,12 +523,8 @@ export class MeetingOrchestrator {
       status: transition.toStatus,
       reason: transition.reason,
       timestampMs: transition.timestampMs,
-      ...(terminal
-        ? {
-            stream_call_id: resolvedStreamCallId,
-            stream_call_type: resolvedStreamCallType
-          }
-        : {}),
+      stream_call_id: resolvedStreamCallId,
+      stream_call_type: resolvedStreamCallType,
       metadata: Object.keys(enrichedMetadata).length > 0 ? enrichedMetadata : undefined
     };
     const idempotencyKey = this.buildIdempotencyKey(payload);
