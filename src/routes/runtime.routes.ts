@@ -59,6 +59,7 @@ export function createRuntimeRouter(deps: {
   snapshots: RuntimeSnapshotService;
   events: RuntimeEventStore;
   leases: RuntimeLeaseStore;
+  meetingOrchestrator?: import("../services/meetingOrchestrator").MeetingOrchestrator;
 }): express.Router {
   const router = express.Router();
 
@@ -172,6 +173,13 @@ export function createRuntimeRouter(deps: {
       payload: input.payload ?? {}
     };
     await deps.events.recordCommand(command);
+    if (input.type === "agent.force_next_question") {
+      deps.meetingOrchestrator?.advanceQuestionIndex(req.params.meetingId, {
+        actor: input.issuedBy ?? "unknown",
+        reason: "force_next_question",
+        sourceId: owner
+      });
+    }
     await deps.leases.release(`runtime-command:${req.params.meetingId}`, owner);
     res.status(202).json({ command });
   }));

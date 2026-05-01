@@ -4,6 +4,7 @@ import { logger } from "../logging/logger";
 import { HttpError } from "../middleware/errorHandler";
 import type { AvatarClient } from "../services/avatarClient";
 import type { AvatarStateStore, AvatarPhase } from "../services/avatarStateStore";
+import type { MeetingOrchestrator } from "../services/meetingOrchestrator";
 import type { RuntimeEventStore } from "../services/runtimeEventStore";
 
 /**
@@ -65,6 +66,7 @@ function asyncHandler(
 export interface AvatarRouterDeps {
   avatarClient: AvatarClient;
   stateStore: AvatarStateStore;
+  meetingOrchestrator: MeetingOrchestrator;
   runtimeEvents?: RuntimeEventStore;
 }
 
@@ -107,6 +109,20 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
           known: Boolean(updated)
         }
       }).catch(() => undefined);
+
+      if (event.type === "response_done") {
+        const sourceId =
+          typeof event.data?.response_id === "string"
+            ? (event.data.response_id as string)
+            : typeof event.data?.responseId === "string"
+              ? (event.data.responseId as string)
+              : undefined;
+        deps.meetingOrchestrator.advanceQuestionIndex(event.meeting_id, {
+          actor: "avatar.pod",
+          reason: "response_done",
+          sourceId
+        });
+      }
 
       logger.info(
         {

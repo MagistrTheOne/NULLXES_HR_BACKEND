@@ -6,6 +6,7 @@ import type { SessionRecord } from "./realtime";
 export type RuntimeEventType =
   | "runtime.snapshot.requested"
   | "runtime.command.requested"
+  | "runtime.question_advanced"
   | "meeting.transition"
   | "candidate.admission.acquire"
   | "candidate.admission.release"

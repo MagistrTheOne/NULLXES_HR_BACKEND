@@ -282,13 +282,14 @@ export async function createApp(): Promise<AppContext> {
     createRuntimeRouter({
       snapshots: runtimeSnapshots,
       events: runtimeEvents,
-      leases: runtimeLeases
+      leases: runtimeLeases,
+      meetingOrchestrator
     })
   );
 
   app.use(
     "/avatar",
-    createAvatarRouter({ avatarClient, stateStore: avatarStateStore, runtimeEvents })
+    createAvatarRouter({ avatarClient, stateStore: avatarStateStore, meetingOrchestrator, runtimeEvents })
   );
   app.use(
     "/",

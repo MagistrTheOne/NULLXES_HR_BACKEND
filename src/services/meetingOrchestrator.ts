@@ -338,6 +338,32 @@ export class MeetingOrchestrator {
     this.updateRecordingMetadata(meetingId, patch);
   }
 
+  advanceQuestionIndex(meetingId: string, input: { actor: string; reason: string; sourceId?: string }): number {
+    const meeting = this.requireMeeting(meetingId);
+    const meta = meeting.metadata ?? {};
+    const lastSource = typeof meta.question_last_source_id === "string" ? meta.question_last_source_id : "";
+    const sourceId = typeof input.sourceId === "string" ? input.sourceId.trim() : "";
+    if (sourceId && sourceId === lastSource) {
+      return typeof meta.question_index === "number" ? meta.question_index : 0;
+    }
+    const currentIndex = typeof meta.question_index === "number" ? meta.question_index : -1;
+    const nextIndex = currentIndex + 1;
+    const currentSeq = typeof meta.question_sequence === "number" ? meta.question_sequence : 0;
+    const nextSeq = currentSeq + 1;
+    this.updateMeetingMetadata(meetingId, {
+      question_index: nextIndex,
+      question_sequence: nextSeq,
+      question_last_source_id: sourceId || null
+    });
+    void this.runtimeEvents?.append({
+      type: "runtime.question_advanced",
+      meetingId,
+      actor: input.actor,
+      payload: { questionIndex: nextIndex, sequence: nextSeq, reason: input.reason, sourceId: sourceId || null }
+    }).catch(() => undefined);
+    return nextIndex;
+  }
+
   listMeetings(): MeetingRecord[] {
     return this.store.listMeetings();
   }
