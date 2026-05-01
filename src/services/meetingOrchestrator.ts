@@ -144,6 +144,9 @@ export class MeetingOrchestrator {
     const agentUserId = `agent_${sessionId}`;
     const candidateUserId = `candidate-${meeting.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
     const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
+    const openaiVoiceRaw = (meeting.metadata ?? {}).openai_realtime_voice;
+    const openaiVoice =
+      typeof openaiVoiceRaw === "string" && openaiVoiceRaw.trim().length > 0 ? openaiVoiceRaw.trim() : undefined;
 
     this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
 
@@ -174,6 +177,7 @@ export class MeetingOrchestrator {
           sessionId,
           agentDisplayName,
           openaiInstructions: instructions,
+          openaiVoice,
           candidateUserId
         })
       )
@@ -328,6 +332,10 @@ export class MeetingOrchestrator {
     if (typeof maybePersist.persistMeeting === "function") {
       void maybePersist.persistMeeting(meetingId);
     }
+  }
+
+  updateMeetingMetadata(meetingId: string, patch: Record<string, unknown>): void {
+    this.updateRecordingMetadata(meetingId, patch);
   }
 
   listMeetings(): MeetingRecord[] {

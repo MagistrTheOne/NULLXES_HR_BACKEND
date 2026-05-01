@@ -67,6 +67,10 @@ const recordingSyncSchema = z.object({
   callId: z.string().min(1).optional()
 });
 
+const openAiVoiceSchema = z.object({
+  voice: z.string().max(80).optional().nullable()
+});
+
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
 ): (req: Request, res: Response, next: express.NextFunction) => void {
@@ -166,6 +170,17 @@ export function createMeetingRouter(
     const result = orchestrator.getMeeting(req.params.meetingId);
     res.status(200).json(result);
   });
+
+  router.post("/:meetingId/openai/voice", asyncHandler(async (req: Request, res: Response) => {
+    const meetingId = req.params.meetingId;
+    orchestrator.getMeeting(meetingId);
+    const input = parseBody(openAiVoiceSchema, req.body ?? {});
+    const voice = typeof input.voice === "string" ? input.voice.trim() : "";
+    orchestrator.updateMeetingMetadata(meetingId, {
+      openai_realtime_voice: voice.length > 0 ? voice : null
+    });
+    res.status(200).json({ ok: true, meetingId, voice: voice.length > 0 ? voice : null });
+  }));
 
   router.get("/", (_req: Request, res: Response) => {
     res.status(200).json({

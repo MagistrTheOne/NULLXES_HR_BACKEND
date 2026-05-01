@@ -23,6 +23,8 @@ export interface CreateAvatarSessionInput {
   agentDisplayName?: string;
   /** OpenAI realtime instructions; if omitted we use a generic interview opener. */
   openaiInstructions?: string;
+  /** Optional OpenAI realtime voice override (persisted per meeting). */
+  openaiVoice?: string;
   /** Optional reference portrait URL for AI2V. Falls back to AVATAR_REFERENCE_IMAGE_URL. */
   referenceImageUrl?: string;
   /** Optional emotion tag. Falls back to AVATAR_DEFAULT_EMOTION. */
@@ -106,7 +108,7 @@ export class AvatarClient {
       transport: "webrtc-sfu" as const,
       openai: {
         instructions: input.openaiInstructions ?? DEFAULT_INSTRUCTIONS,
-        voice: env.OPENAI_REALTIME_VOICE,
+        voice: input.openaiVoice?.trim() || env.OPENAI_REALTIME_VOICE,
         input_audio_format: "pcm16" as const,
         output_audio_format: "pcm16" as const
       },
