@@ -23,6 +23,8 @@ import type { RuntimeEventStore } from "../services/runtimeEventStore";
 
 const POD_EVENT_TYPES = [
   "avatar_ready",
+  "speaker_changed",
+  "engine_degraded",
   "transcript_delta",
   "transcript_completed",
   "response_done",
@@ -42,6 +44,9 @@ function eventTypeToPhase(type: (typeof POD_EVENT_TYPES)[number]): AvatarPhase {
   switch (type) {
     case "avatar_ready":
       return "ready";
+    case "speaker_changed":
+    case "engine_degraded":
+      return "starting";
     case "transcript_delta":
       return "transcript_delta";
     case "transcript_completed":
@@ -92,11 +97,38 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
           ? (event.data.message as string)
           : undefined;
 
-      const updated = deps.stateStore.recordEvent(event.meeting_id, {
-        sessionId: event.session_id,
-        phase,
-        lastError
-      });
+      const updated =
+        event.type === "speaker_changed"
+          ? deps.stateStore.patch(event.meeting_id, {
+              sessionId: event.session_id,
+              activeSpeaker:
+                event.data?.active_speaker === "candidate" ? "candidate" : event.data?.active_speaker === "assistant" ? "assistant" : undefined,
+              videoAudioSource:
+                event.data?.video_audio_source === "mic"
+                  ? "mic"
+                  : event.data?.video_audio_source === "tts"
+                    ? "tts"
+                    : event.data?.video_audio_source === "auto"
+                      ? "auto"
+                      : undefined
+            })
+          : event.type === "engine_degraded"
+            ? deps.stateStore.patch(event.meeting_id, {
+                sessionId: event.session_id,
+                degradationLevel:
+                  event.data?.level === "hard"
+                    ? "hard"
+                    : event.data?.level === "soft"
+                      ? "soft"
+                      : event.data?.level === "fallback"
+                        ? "fallback"
+                        : "none"
+              })
+            : deps.stateStore.recordEvent(event.meeting_id, {
+                sessionId: event.session_id,
+                phase,
+                lastError
+              });
       void deps.runtimeEvents?.append({
         type: "avatar.event",
         meetingId: event.meeting_id,

@@ -26,6 +26,7 @@ import { createRealtimeRouter } from "./routes/realtime.routes";
 import { createRuntimeRouter } from "./routes/runtime.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
+import { PersistedAvatarStateStore } from "./services/persistedAvatarStateStore";
 import { StreamProvisioner } from "./services/streamProvisioner";
 import { StreamRecordingService } from "./services/streamRecordingService";
 import { InterviewSyncService } from "./services/interviewSyncService";
@@ -81,7 +82,13 @@ export async function createApp(): Promise<AppContext> {
     prefix: env.REDIS_PREFIX
   });
   const avatarClient = new AvatarClient();
-  const avatarStateStore = new AvatarStateStore();
+  const avatarStateStore =
+    env.STORAGE_BACKEND === "redis" && storage.redis
+      ? new PersistedAvatarStateStore({ redis: storage.redis, prefix: env.REDIS_PREFIX, ttlMs: env.REDIS_SESSION_TTL_MS })
+      : new AvatarStateStore();
+  if (avatarStateStore instanceof PersistedAvatarStateStore) {
+    await avatarStateStore.loadAll().catch(() => undefined);
+  }
   const streamProvisioner =
     avatarClient.isConfigured() && env.STREAM_API_KEY && env.STREAM_API_SECRET
       ? new StreamProvisioner({

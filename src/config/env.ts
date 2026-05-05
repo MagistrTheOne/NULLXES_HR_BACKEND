@@ -64,6 +64,11 @@ const envSchema = z.object({
   AVATAR_DEFAULT_KEY: z.string().min(1).default("anna"),
   AVATAR_DEFAULT_EMOTION: z.string().min(1).default("neutral"),
   AVATAR_REFERENCE_IMAGE_URL: z.string().url().optional(),
+  AVATAR_DUPLEX_MODE: z.enum(["single_assistant", "duplex"]).default("single_assistant"),
+  AVATAR_VIDEO_AUDIO_SOURCE: z.enum(["tts", "mic", "auto"]).default("tts"),
+  AVATAR_SPEAKER_HOLD_MS: z.coerce.number().int().min(0).max(10_000).default(600),
+  AVATAR_MIC_VAD_RMS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.02),
+  AVATAR_MIC_VAD_SILENCE_MS: z.coerce.number().int().min(0).max(10_000).default(450),
   // Stream SFU (used by avatar pod and frontend; gateway only forwards keys to pod)
   STREAM_API_KEY: z.string().min(1).optional(),
   STREAM_API_SECRET: z.string().min(1).optional(),

@@ -14,6 +14,9 @@ const commandSchema = z.object({
     "agent.cancel_response",
     "agent.force_next_question",
     "agent.end_interview",
+    "avatar.duplex_mode.set",
+    "avatar.video_audio_source.set",
+    "avatar.speaker.set",
     "observer.reconnect",
     "session.stop"
   ]),

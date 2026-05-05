@@ -106,6 +106,11 @@ export class AvatarClient {
       session_id: input.sessionId,
       avatar_key: input.avatarKey ?? env.AVATAR_DEFAULT_KEY,
       transport: "webrtc-sfu" as const,
+      duplex_mode: env.AVATAR_DUPLEX_MODE,
+      video_audio_source: env.AVATAR_VIDEO_AUDIO_SOURCE,
+      speaker_hold_ms: env.AVATAR_SPEAKER_HOLD_MS,
+      mic_vad_rms_threshold: env.AVATAR_MIC_VAD_RMS_THRESHOLD,
+      mic_vad_silence_ms: env.AVATAR_MIC_VAD_SILENCE_MS,
       openai: {
         instructions: input.openaiInstructions ?? DEFAULT_INSTRUCTIONS,
         voice: input.openaiVoice?.trim() || env.OPENAI_REALTIME_VOICE,

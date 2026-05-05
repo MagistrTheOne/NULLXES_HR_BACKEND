@@ -26,6 +26,10 @@ export interface AvatarState {
   agentUserId?: string;
   phase: AvatarPhase;
   avatarReady: boolean;
+  activeSpeaker?: "assistant" | "candidate";
+  duplexMode?: "single_assistant" | "duplex";
+  videoAudioSource?: "tts" | "mic" | "auto";
+  degradationLevel?: "none" | "soft" | "hard" | "fallback";
   lastEventAt: number;
   lastError?: string;
   startedAt: number;
@@ -33,6 +37,10 @@ export interface AvatarState {
 
 export class AvatarStateStore {
   private readonly states = new Map<string, AvatarState>();
+
+  protected setInternal(meetingId: string, state: AvatarState): void {
+    this.states.set(meetingId, state);
+  }
 
   upsertStart(meetingId: string, sessionId: string, agentUserId: string): void {
     const now = Date.now();
@@ -70,6 +78,28 @@ export class AvatarStateStore {
       avatarReady: update.phase === "ready",
       lastEventAt: Date.now(),
       lastError: update.lastError ?? existing.lastError
+    };
+    this.states.set(meetingId, next);
+    return next;
+  }
+
+  patch(meetingId: string, patch: Partial<Omit<AvatarState, "meetingId">> & { sessionId: string }): AvatarState | null {
+    const existing = this.states.get(meetingId);
+    if (!existing) {
+      logger.warn({ meetingId, patch }, "avatar patch for unknown meeting (state store miss)");
+      return null;
+    }
+    if (existing.sessionId !== patch.sessionId) {
+      logger.warn(
+        { meetingId, expectedSessionId: existing.sessionId, gotSessionId: patch.sessionId },
+        "avatar patch session_id mismatch"
+      );
+    }
+    const next: AvatarState = {
+      ...existing,
+      ...patch,
+      meetingId,
+      lastEventAt: Date.now()
     };
     this.states.set(meetingId, next);
     return next;
