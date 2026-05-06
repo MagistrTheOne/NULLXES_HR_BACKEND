@@ -13,8 +13,13 @@ import { mintStreamUserToken } from "./streamCallTokenService";
 
 export interface CreateAvatarSessionInput {
   meetingId: string;
-  /** Stable session id; the pod mounts the agent as `agent_<sessionId>`. */
+  /** Stable realtime/session correlation id for the pod (not the Stream agent user id). */
   sessionId: string;
+  /**
+   * Stream user id the **pod** uses to join the call. Must differ from gateway `agent_<meetingId>`
+   * so the gateway-owned HR tile is not disconnected. Default: `agent_pod_<sessionId>`.
+   */
+  podStreamUserId?: string;
   /** Optional override: pick video generator on the pod. */
   videoModel?: "wan" | "ltx";
   /** Identity key passed to ARACHNE IdentityBank. Defaults to `AVATAR_DEFAULT_KEY`. */
@@ -104,7 +109,11 @@ export class AvatarClient {
       );
     }
 
-    const agentUserId = `agent_${input.sessionId}`;
+    const podIdOverride = typeof input.podStreamUserId === "string" ? input.podStreamUserId.trim() : "";
+    const agentUserId =
+      podIdOverride.length > 0
+        ? podIdOverride
+        : `agent_pod_${input.sessionId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
     const candidateUserId =
       input.candidateUserId ?? `candidate-${input.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
 

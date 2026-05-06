@@ -4,6 +4,7 @@ import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { mintStreamUserToken } from "./streamCallTokenService";
 import { resamplePcm16Linear } from "./audioResampler";
+import { createStaticI420Frame } from "./staticI420Frame";
 
 export type StreamPublisherState = "idle" | "connecting" | "connected" | "failed" | "closed";
 
@@ -46,7 +47,7 @@ function decodePcm16Le(buf: Buffer): Int16Array {
 }
 
 /**
- * Stream SFU publisher that joins as agent_<sessionId> and publishes:
+ * Stream SFU publisher that joins as agent_<meetingId> and publishes:
  * - agent_audio (PCM16 authoritative audio)
  * - agent_video (I420 frames from clip buffer)
  *
@@ -67,6 +68,7 @@ export class StreamAgentPublisher {
   private videoTrack: MediaStreamTrack | null = null;
   private publishedAudio = false;
   private publishedVideo = false;
+  private lastVideoFrameLogAtMs = 0;
 
   private audioOutRateHz = 48_000;
   private audioInRateHz = 24_000;
@@ -76,7 +78,7 @@ export class StreamAgentPublisher {
   }
 
   async connect(input: { meetingId: string; sessionId: string; audioInRateHz?: number }): Promise<void> {
-    if (this.state === "connected" && this.meetingId === input.meetingId && this.sessionId === input.sessionId) {
+    if (this.state === "connected" && this.meetingId === input.meetingId) {
       return;
     }
     if (this.state === "connecting") {
@@ -91,8 +93,25 @@ export class StreamAgentPublisher {
 
     if (process.platform === "win32") {
       // We rely on wrtc for MediaStream/RTCPeerConnection; production runs on Linux.
-      throw new Error("StreamAgentPublisher requires Linux (wrtc globals are not supported on Windows)");
+      const err = new Error("StreamAgentPublisher requires Linux (wrtc globals are not supported on Windows)");
+      logger.error(
+        { event: "stream_agent_publish_error", meetingId: input.meetingId, sessionId: input.sessionId, message: err.message },
+        "stream_agent_publish_error"
+      );
+      throw err;
     }
+
+    const agentUserId = `agent_${input.meetingId}`;
+    logger.info(
+      {
+        event: "stream_agent_join_started",
+        meetingId: input.meetingId,
+        sessionId: input.sessionId,
+        agentUserId,
+        callType: env.STREAM_CALL_TYPE
+      },
+      "stream_agent_join_started"
+    );
 
     const wrtc = (await import("@roamhq/wrtc")) as WrtcModule;
     this.wrtc = wrtc;
@@ -106,43 +125,96 @@ export class StreamAgentPublisher {
 
     if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) {
       this.state = "failed";
-      throw new Error("STREAM_API_KEY/STREAM_API_SECRET are required for StreamAgentPublisher");
+      const err = new Error("STREAM_API_KEY/STREAM_API_SECRET are required for StreamAgentPublisher");
+      logger.error(
+        {
+          event: "stream_agent_publish_error",
+          meetingId: input.meetingId,
+          sessionId: input.sessionId,
+          agentUserId,
+          message: err.message
+        },
+        "stream_agent_publish_error"
+      );
+      throw err;
     }
 
-    const agentUserId = `agent_${input.sessionId}`;
     const token = mintStreamUserToken({
       apiSecret: env.STREAM_API_SECRET,
       userId: agentUserId,
       validitySeconds: 60 * 60 * 4
     });
 
-    const stream = new StreamVideoClient({
-      apiKey: env.STREAM_API_KEY,
-      user: { id: agentUserId, name: "HR ассистент" },
-      token
-    });
-    const call = stream.call(env.STREAM_CALL_TYPE, input.meetingId);
-    await call.join({ create: true });
+    try {
+      const stream = new StreamVideoClient({
+        apiKey: env.STREAM_API_KEY,
+        user: { id: agentUserId, name: "HR ассистент" },
+        token
+      });
+      const call = stream.call(env.STREAM_CALL_TYPE, input.meetingId);
+      await call.join({ create: true });
 
-    const audioSource = new wrtc.nonstandard.RTCAudioSource();
-    const videoSource = new wrtc.nonstandard.RTCVideoSource();
-    const audioTrack = audioSource.createTrack();
-    const videoTrack = videoSource.createTrack();
+      const audioSource = new wrtc.nonstandard.RTCAudioSource();
+      const videoSource = new wrtc.nonstandard.RTCVideoSource();
+      const audioTrack = audioSource.createTrack();
+      const videoTrack = videoSource.createTrack();
 
-    // Publish both tracks.
-    await call.publish(new MediaStream([audioTrack]), TRACK_TYPE_AUDIO);
-    await call.publish(new MediaStream([videoTrack]), TRACK_TYPE_VIDEO);
+      // Publish both tracks.
+      await call.publish(new MediaStream([audioTrack]), TRACK_TYPE_AUDIO);
+      await call.publish(new MediaStream([videoTrack]), TRACK_TYPE_VIDEO);
 
-    this.stream = stream;
-    this.call = call;
-    this.audioSource = audioSource;
-    this.videoSource = videoSource;
-    this.audioTrack = audioTrack;
-    this.videoTrack = videoTrack;
-    this.publishedAudio = true;
-    this.publishedVideo = true;
-    this.state = "connected";
-    logger.info({ meetingId: input.meetingId, sessionId: input.sessionId }, "stream agent publisher connected");
+      this.stream = stream;
+      this.call = call;
+      this.audioSource = audioSource;
+      this.videoSource = videoSource;
+      this.audioTrack = audioTrack;
+      this.videoTrack = videoTrack;
+      this.publishedAudio = true;
+      this.publishedVideo = true;
+      this.state = "connected";
+
+      logger.info(
+        {
+          event: "stream_agent_joined",
+          meetingId: input.meetingId,
+          sessionId: input.sessionId,
+          agentUserId,
+          callType: env.STREAM_CALL_TYPE,
+          callId: input.meetingId
+        },
+        "stream_agent_joined"
+      );
+
+      const staticW = 512;
+      const staticH = 512;
+      const staticFrame = createStaticI420Frame(staticW, staticH, 16);
+      await this.publishVideoFrameI420(staticFrame.data, staticW, staticH, Date.now());
+      logger.info(
+        {
+          event: "stream_agent_static_video_published",
+          meetingId: input.meetingId,
+          sessionId: input.sessionId,
+          agentUserId,
+          width: staticW,
+          height: staticH
+        },
+        "stream_agent_static_video_published"
+      );
+    } catch (err: unknown) {
+      this.state = "failed";
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(
+        {
+          event: "stream_agent_publish_error",
+          meetingId: input.meetingId,
+          sessionId: input.sessionId,
+          agentUserId,
+          message
+        },
+        "stream_agent_publish_error"
+      );
+      throw err;
+    }
   }
 
   /**
@@ -204,8 +276,26 @@ export class StreamAgentPublisher {
         data: i420,
         timestamp: timestampMs
       } as any);
+      const now = Date.now();
+      if (now - this.lastVideoFrameLogAtMs >= 2000) {
+        this.lastVideoFrameLogAtMs = now;
+        logger.info(
+          {
+            event: "stream_agent_video_frame_published",
+            meetingId: this.meetingId,
+            sessionId: this.sessionId,
+            width,
+            height,
+            timestampMs
+          },
+          "stream_agent_video_frame_published"
+        );
+      }
     } catch (err) {
-      logger.warn({ err }, "stream publishVideoFrameI420 failed (non-fatal)");
+      logger.warn(
+        { event: "stream_agent_publish_error", err, meetingId: this.meetingId, sessionId: this.sessionId },
+        "stream publishVideoFrameI420 failed (non-fatal)"
+      );
     }
   }
 

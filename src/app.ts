@@ -41,7 +41,9 @@ import {
 import { ObserverSessionTicketSigner } from "./services/observerSessionTicketSigner";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
+import { OpenAiRealtimeOrchestrator } from "./services/openaiOrchestrator";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
+import { RunpodWorkerClient } from "./services/runpodWorkerClient";
 import { PostMeetingProcessor } from "./services/postMeetingProcessor";
 import { RuntimeEventStore } from "./services/runtimeEventStore";
 import { RuntimeLeaseStore } from "./services/runtimeLeaseStore";
@@ -92,13 +94,15 @@ export async function createApp(): Promise<AppContext> {
     await avatarStateStore.loadAll().catch(() => undefined);
   }
   const streamProvisioner =
-    avatarClient.isConfigured() && env.STREAM_API_KEY && env.STREAM_API_SECRET
+    env.STREAM_API_KEY && env.STREAM_API_SECRET
       ? new StreamProvisioner({
           apiKey: env.STREAM_API_KEY,
           apiSecret: env.STREAM_API_SECRET,
           baseUrl: env.STREAM_BASE_URL
         })
       : undefined;
+  const openAiOrchestrator = new OpenAiRealtimeOrchestrator({ runtimeEvents });
+  const runpodWorker = new RunpodWorkerClient();
   const streamRecordingService =
     env.STREAM_API_KEY && env.STREAM_API_SECRET
       ? new StreamRecordingService({
@@ -117,12 +121,14 @@ export async function createApp(): Promise<AppContext> {
       ? {
           client: avatarClient,
           stateStore: avatarStateStore,
-          streamProvisioner,
           streamCallType: env.STREAM_CALL_TYPE
         }
       : undefined,
     runtimeEvents,
-    streamRecordingService
+    streamRecordingService,
+    streamProvisioner,
+    openAiOrchestrator,
+    runpodWorker
   );
   const runtimeSnapshots = new RuntimeSnapshotService({
     meetingStore,
@@ -232,7 +238,8 @@ export async function createApp(): Promise<AppContext> {
     createRealtimeRouter({
       openAIClient,
       sessionStore,
-      runtimeEvents
+      runtimeEvents,
+      meetingOrchestrator
     }),
     createOrchestratedRealtimeRouter({
       runtimeEvents

@@ -27,17 +27,21 @@ import type { RuntimeEventStore } from "./runtimeEventStore";
 import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
 import type { StreamProvisioner } from "./streamProvisioner";
 import { WebhookOutbox } from "./webhookOutbox";
+import { AvatarRuntimeEngine } from "./avatarRuntimeEngine";
+import { OpenAiRealtimeOrchestrator } from "./openaiOrchestrator";
+import { RunpodWorkerClient } from "./runpodWorkerClient";
+import { StreamAgentPublisher } from "./streamAgentPublisher";
 
 export interface MeetingOrchestratorAvatarDeps {
   client: AvatarClient;
   stateStore: AvatarStateStore;
-  /** Optional Stream provisioner; when provided we upsert agent + create call before kickoff. */
-  streamProvisioner?: StreamProvisioner;
   /** Stream call type to use for provisioning (defaults match what the pod uses). */
   streamCallType?: string;
 }
 
 export class MeetingOrchestrator {
+  private readonly avatarVideoEngines = new Map<string, AvatarRuntimeEngine>();
+
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
@@ -45,7 +49,10 @@ export class MeetingOrchestrator {
     private readonly postMeetingProcessor: PostMeetingProcessor,
     private readonly avatar?: MeetingOrchestratorAvatarDeps,
     private readonly runtimeEvents?: RuntimeEventStore,
-    private readonly streamRecording?: StreamRecordingService
+    private readonly streamRecording?: StreamRecordingService,
+    private readonly streamProvisioner?: StreamProvisioner,
+    private readonly openAiOrchestrator?: OpenAiRealtimeOrchestrator,
+    private readonly runpodWorker?: RunpodWorkerClient
   ) {}
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
@@ -127,10 +134,57 @@ export class MeetingOrchestrator {
     void tryStart();
   }
 
-  private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
-    if (!this.avatar || !this.avatar.client.isConfigured()) {
-      return;
+  /**
+   * Browser forwards OpenAI output-audio deltas; gateway feeds EchoMimic + Stream agent audio.
+   */
+  ingestAssistantOutputAudioPcm(
+    meetingId: string | undefined,
+    sessionId: string,
+    pcm16: Buffer,
+    sampleRateHz: number,
+    timestampMs?: number
+  ): void {
+    if (!meetingId) return;
+    const engine = this.avatarVideoEngines.get(meetingId);
+    if (!engine) return;
+    const ts = typeof timestampMs === "number" ? timestampMs : Date.now();
+    engine.ingestOpenAiTtsPcm16({ pcm16, sampleRateHz, timestampMs: ts });
+  }
+
+  private startGatewayAvatarVideo(meetingId: string, sessionId: string): void {
+    if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) return;
+    if (!this.openAiOrchestrator) return;
+    if (this.avatarVideoEngines.has(meetingId)) return;
+    const runpod = this.runpodWorker ?? new RunpodWorkerClient();
+    const engine = new AvatarRuntimeEngine({
+      orchestrator: this.openAiOrchestrator,
+      publisher: new StreamAgentPublisher(),
+      runpod,
+      runtimeEvents: this.runtimeEvents
+    });
+    this.openAiOrchestrator.start(meetingId, sessionId);
+    void engine
+      .start({ meetingId, sessionId, openAiAudioRateHz: 24_000 })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { event: "stream_agent_publish_error", meetingId, sessionId, agentUserId: `agent_${meetingId}`, message },
+          "gateway avatar video engine start failed"
+        );
+      });
+    this.avatarVideoEngines.set(meetingId, engine);
+  }
+
+  private stopGatewayAvatarVideo(meetingId: string): void {
+    const engine = this.avatarVideoEngines.get(meetingId);
+    if (engine) {
+      engine.stop();
+      this.avatarVideoEngines.delete(meetingId);
     }
+    this.openAiOrchestrator?.close(meetingId);
+  }
+
+  private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
     const interviewContext = (input.metadata?.interviewContext ?? {}) as Record<string, unknown>;
     const candidateName =
@@ -141,17 +195,16 @@ export class MeetingOrchestrator {
       typeof interviewContext.jobTitle === "string" ? (interviewContext.jobTitle as string) : undefined;
 
     const instructions = this.composeOpeningInstructions(jobTitle, candidateName);
-    const agentUserId = `agent_${sessionId}`;
+    /** Stream HR agent identity — must match frontend pick (`agent_${meetingId}`). */
+    const agentUserId = `agent_${meeting.meetingId}`;
     const candidateUserId = `candidate-${meeting.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
     const agentDisplayName = jobTitle ? `HR · ${jobTitle}` : "HR ассистент";
     const openaiVoiceRaw = (meeting.metadata ?? {}).openai_realtime_voice;
     const openaiVoice =
       typeof openaiVoiceRaw === "string" && openaiVoiceRaw.trim().length > 0 ? openaiVoiceRaw.trim() : undefined;
 
-    this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
-
-    const provisioner = this.avatar.streamProvisioner;
-    const callType = this.avatar.streamCallType ?? "default";
+    const callType = this.avatar?.streamCallType ?? env.STREAM_CALL_TYPE;
+    const provisioner = this.streamProvisioner;
     const provisionStep = provisioner
       ? provisioner
           .provisionAgentForCall({
@@ -169,6 +222,25 @@ export class MeetingOrchestrator {
             );
           })
       : Promise.resolve();
+
+    void provisionStep
+      .then(() => {
+        this.startGatewayAvatarVideo(meeting.meetingId, sessionId);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          { meetingId: meeting.meetingId, message },
+          "stream provision failed — still starting gateway avatar video"
+        );
+        this.startGatewayAvatarVideo(meeting.meetingId, sessionId);
+      });
+
+    if (!this.avatar?.client.isConfigured()) {
+      return;
+    }
+
+    this.avatar.stateStore.upsertStart(meeting.meetingId, sessionId, agentUserId);
 
     void provisionStep
       .then(() =>
@@ -237,6 +309,7 @@ export class MeetingOrchestrator {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
+    this.stopGatewayAvatarVideo(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -286,6 +359,7 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
+    this.stopGatewayAvatarVideo(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
