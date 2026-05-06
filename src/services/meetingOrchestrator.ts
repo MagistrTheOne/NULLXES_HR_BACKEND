@@ -26,8 +26,6 @@ import { PostMeetingProcessor } from "./postMeetingProcessor";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { StreamRecordingStateError, type StreamRecordingService } from "./streamRecordingService";
 import type { StreamProvisioner } from "./streamProvisioner";
-import { createStaticI420Frame } from "./staticI420Frame";
-import { StreamAgentPublisher } from "./streamAgentPublisher";
 import { WebhookOutbox } from "./webhookOutbox";
 
 export interface MeetingOrchestratorAvatarDeps {
@@ -40,9 +38,6 @@ export interface MeetingOrchestratorAvatarDeps {
 }
 
 export class MeetingOrchestrator {
-  private readonly streamAgentPublishers = new Map<string, StreamAgentPublisher>();
-  private readonly streamAgentPublishTimers = new Map<string, NodeJS.Timeout>();
-
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
@@ -134,10 +129,6 @@ export class MeetingOrchestrator {
 
   private kickoffAvatar(meeting: MeetingRecord, input: StartMeetingInput): void {
     if (!this.avatar || !this.avatar.client.isConfigured()) {
-      if (env.STREAM_API_KEY && env.STREAM_API_SECRET) {
-        const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
-        this.kickoffStreamAgentPublisher(meeting.meetingId, sessionId);
-      }
       return;
     }
     const sessionId = input.sessionId ?? meeting.sessionId ?? meeting.meetingId;
@@ -180,17 +171,16 @@ export class MeetingOrchestrator {
       : Promise.resolve();
 
     void provisionStep
-      .then(() => {
-        this.kickoffStreamAgentPublisher(meeting.meetingId, sessionId);
-        return this.avatar!.client.createSession({
+      .then(() =>
+        this.avatar!.client.createSession({
           meetingId: meeting.meetingId,
           sessionId,
           agentDisplayName,
           openaiInstructions: instructions,
           openaiVoice,
           candidateUserId
-        });
-      })
+        })
+      )
       .then((response) => {
         logger.info(
           {
@@ -247,7 +237,6 @@ export class MeetingOrchestrator {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
     this.stopRecording(meetingId);
-    this.stopStreamAgentPublisher(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -297,70 +286,8 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
-    this.stopStreamAgentPublisher(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
-  }
-
-  /**
-   * Join Stream as `agent_${sessionId}` and publish a sustained static I420 video track so HR/spectator
-   * UIs see a real agent participant (not the `avatar-viewer-*` internal tile) before EchoMimic runs.
-   */
-  private kickoffStreamAgentPublisher(meetingId: string, sessionId: string): void {
-    if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) {
-      return;
-    }
-    if (this.streamAgentPublishers.has(meetingId)) {
-      return;
-    }
-    const agentUserId = `agent_${sessionId}`;
-    const publisher = new StreamAgentPublisher();
-    void publisher
-      .connect({ meetingId, sessionId })
-      .then(async () => {
-        const staticFrame = createStaticI420Frame(512, 512, 16);
-        const ts = Date.now();
-        await publisher.publishVideoFrameI420(staticFrame.data, staticFrame.width, staticFrame.height, ts);
-        logger.info(
-          {
-            event: "stream_agent_static_frame_published",
-            meetingId,
-            sessionId,
-            agentUserId,
-            width: staticFrame.width,
-            height: staticFrame.height
-          },
-          "stream_agent_static_frame_published"
-        );
-
-        const interval = setInterval(() => {
-          void publisher
-            .publishVideoFrameI420(staticFrame.data, staticFrame.width, staticFrame.height, Date.now())
-            .catch(() => undefined);
-        }, Math.floor(1000 / 25));
-        this.streamAgentPublishTimers.set(meetingId, interval);
-        this.streamAgentPublishers.set(meetingId, publisher);
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.error(
-          { event: "stream_agent_publish_error", meetingId, sessionId, agentUserId, message },
-          "stream_agent_publish_error"
-        );
-      });
-  }
-
-  private stopStreamAgentPublisher(meetingId: string): void {
-    const timer = this.streamAgentPublishTimers.get(meetingId);
-    if (timer) {
-      clearInterval(timer);
-      this.streamAgentPublishTimers.delete(meetingId);
-    }
-    const publisher = this.streamAgentPublishers.get(meetingId);
-    if (publisher) {
-      void publisher.close().catch(() => undefined);
-      this.streamAgentPublishers.delete(meetingId);
-    }
   }
 
   private inferFailureReasonCode(input: FailMeetingInput): MeetingFailureReasonCode {

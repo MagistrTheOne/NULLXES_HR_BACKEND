@@ -67,7 +67,6 @@ export class StreamAgentPublisher {
   private videoTrack: MediaStreamTrack | null = null;
   private publishedAudio = false;
   private publishedVideo = false;
-  private lastVideoFrameLogAtMs = 0;
 
   private audioOutRateHz = 48_000;
   private audioInRateHz = 24_000;
@@ -87,12 +86,6 @@ export class StreamAgentPublisher {
     this.meetingId = input.meetingId;
     this.sessionId = input.sessionId;
     this.audioInRateHz = input.audioInRateHz ?? this.audioInRateHz;
-
-    const agentUserId = `agent_${input.sessionId}`;
-    logger.info(
-      { event: "stream_agent_join_started", meetingId: input.meetingId, sessionId: input.sessionId, agentUserId },
-      "stream_agent_join_started"
-    );
 
     ensureNodePolyfills();
 
@@ -116,6 +109,7 @@ export class StreamAgentPublisher {
       throw new Error("STREAM_API_KEY/STREAM_API_SECRET are required for StreamAgentPublisher");
     }
 
+    const agentUserId = `agent_${input.sessionId}`;
     const token = mintStreamUserToken({
       apiSecret: env.STREAM_API_SECRET,
       userId: agentUserId,
@@ -137,16 +131,6 @@ export class StreamAgentPublisher {
 
     // Publish both tracks.
     await call.publish(new MediaStream([audioTrack]), TRACK_TYPE_AUDIO);
-    logger.info(
-      {
-        event: "stream_agent_audio_published",
-        meetingId: input.meetingId,
-        sessionId: input.sessionId,
-        agentUserId,
-        kind: "rtc_audio_track"
-      },
-      "stream_agent_audio_published"
-    );
     await call.publish(new MediaStream([videoTrack]), TRACK_TYPE_VIDEO);
 
     this.stream = stream;
@@ -158,10 +142,7 @@ export class StreamAgentPublisher {
     this.publishedAudio = true;
     this.publishedVideo = true;
     this.state = "connected";
-    logger.info(
-      { event: "stream_agent_joined", meetingId: input.meetingId, sessionId: input.sessionId, agentUserId },
-      "stream_agent_joined"
-    );
+    logger.info({ meetingId: input.meetingId, sessionId: input.sessionId }, "stream agent publisher connected");
   }
 
   /**
@@ -223,23 +204,8 @@ export class StreamAgentPublisher {
         data: i420,
         timestamp: timestampMs
       } as any);
-      const now = Date.now();
-      if (now - this.lastVideoFrameLogAtMs >= 10_000) {
-        this.lastVideoFrameLogAtMs = now;
-        logger.info(
-          {
-            event: "stream_agent_video_frame_published",
-            meetingId: this.meetingId,
-            sessionId: this.sessionId,
-            width,
-            height,
-            bytes: i420.length
-          },
-          "stream_agent_video_frame_published"
-        );
-      }
     } catch (err) {
-      logger.warn({ err, event: "stream_agent_publish_error" }, "stream publishVideoFrameI420 failed (non-fatal)");
+      logger.warn({ err }, "stream publishVideoFrameI420 failed (non-fatal)");
     }
   }
 

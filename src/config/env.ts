@@ -102,12 +102,7 @@ const envSchema = z.object({
   RUNPOD_WORKER_RETURN_FRAMES: z.coerce.boolean().default(true),
   VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
   AVATAR_VIDEO_ENABLED: z.coerce.boolean().default(true),
-  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
-  /**
-   * Future: browser captures OpenAI remote audio (WebRTC), POSTs PCM16 to gateway,
-   * gateway calls AvatarRuntimeEngine / StreamAgentPublisher. Not implemented — flag reserved.
-   */
-  AVATAR_BROWSER_AUDIO_BRIDGE_ENABLED: z.coerce.boolean().default(false)
+  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static")
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {

@@ -25,12 +25,6 @@ interface SessionRecord {
  * NOTE: This is the control-plane skeleton. It records events and provides a
  * single integration point for audio clock / interruptions / boundaries.
  * The actual OpenAI transport (WS/WebRTC) is implemented behind this facade.
- *
- * Audio bridge reality check: assistant TTS in **browser WebRTC** mode may never
- * surface as JSON `response.*audio*.delta` on `POST /realtime/session/:id/events`
- * unless the client forwards those server events. If `openai_event_received` shows
- * no audio deltas, gateway PCM → EchoMimic will not run until a **browser-side**
- * capture bridge exists (see `AVATAR_BROWSER_AUDIO_BRIDGE_ENABLED` in env; not implemented).
  */
 export class OpenAiRealtimeOrchestrator {
   private readonly sessions = new Map<string, SessionRecord>();
