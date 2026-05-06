@@ -152,6 +152,13 @@ export class MeetingOrchestrator {
   }
 
   private startGatewayAvatarVideo(meetingId: string, sessionId: string): void {
+    if (!env.GATEWAY_STREAM_AGENT_ENABLED) {
+      logger.info(
+        { meetingId, sessionId },
+        "gateway stream agent skipped (GATEWAY_STREAM_AGENT_ENABLED=false)"
+      );
+      return;
+    }
     if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) return;
     if (!this.openAiOrchestrator) return;
     if (this.avatarVideoEngines.has(meetingId)) return;
