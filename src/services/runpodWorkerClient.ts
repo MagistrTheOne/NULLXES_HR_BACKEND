@@ -118,7 +118,7 @@ export class RunpodWorkerClient {
       const out = await this.generateClip(input);
       return { ok: true, ...out };
     } catch (err) {
-      logger.warn({ event: "worker_degraded", err }, "worker_degraded");
+      logger.warn({ err }, "worker_degraded (sync)");
       return { ok: false, degraded: true, reason: "worker_http_error", error: err };
     }
   }

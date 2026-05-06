@@ -119,12 +119,6 @@ export class AvatarRuntimeEngine {
   ingestOpenAiTtsPcm16(input: { pcm16: Buffer; sampleRateHz: number; timestampMs: number }): void {
     if (!this.running || !this.meetingId || !this.sessionId) return;
 
-    this.orchestrator.ingestTtsPcm16(this.meetingId, {
-      pcm16: input.pcm16,
-      sampleRateHz: input.sampleRateHz,
-      timestampMs: input.timestampMs
-    });
-
     const now = Date.now();
     if (now - this.lastAvatarAudioPcmLogAtMs >= 500) {
       this.lastAvatarAudioPcmLogAtMs = now;
@@ -183,17 +177,13 @@ export class AvatarRuntimeEngine {
 
   private async videoTick(): Promise<void> {
     if (!this.running || !this.meetingId) return;
-    if (!env.AVATAR_VIDEO_ENABLED) return;
-
+    if (!env.AVATAR_VIDEO_ENABLED || env.VIDEO_MODEL !== "echomimic") return;
     const audioClock = this.orchestrator.getAudioClockMs(this.meetingId) ?? Date.now();
     const targetTime = audioClock - this.latencyCompensationMs;
-    const useEcho = env.VIDEO_MODEL === "echomimic" && this.runpod.isConfigured();
-    const frame = useEcho ? this.clipBuffer.getFrameAtTime(targetTime) : null;
-
+    const frame = this.clipBuffer.getFrameAtTime(targetTime);
     if (!frame) {
       this.underflowTicks += 1;
-      const useStatic = env.AVATAR_VIDEO_DEGRADED_FALLBACK === "static" || !useEcho;
-      if (useStatic) {
+      if (env.AVATAR_VIDEO_DEGRADED_FALLBACK === "static") {
         const width = 512;
         const height = 512;
         this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
@@ -203,6 +193,7 @@ export class AvatarRuntimeEngine {
       }
       return;
     }
+    // Publish I420 frame.
     await this.publisher.publishVideoFrameI420(frame.i420, frame.width, frame.height, targetTime).catch(() => undefined);
   }
 
@@ -275,17 +266,6 @@ export class AvatarRuntimeEngine {
 
       if (!result.ok) {
         this.nextGenerationAllowedAtMs = Date.now() + 10_000;
-        logger.warn(
-          {
-            event: "worker_degraded",
-            meetingId: this.meetingId,
-            sessionId: this.sessionId,
-            reason: result.reason,
-            workerStatus: result.workerStatus,
-            workerLatencyMs: result.workerLatencyMs
-          },
-          "worker_degraded"
-        );
         void this.runtimeEvents?.append({
           type: "avatar.degraded",
           meetingId: this.meetingId,

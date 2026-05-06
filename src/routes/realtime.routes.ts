@@ -4,7 +4,6 @@ import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { HttpError } from "../middleware/errorHandler";
 import { OpenAIRealtimeClient } from "../services/openaiRealtimeClient";
-import type { MeetingOrchestrator } from "../services/meetingOrchestrator";
 import type { RuntimeEventStore } from "../services/runtimeEventStore";
 import { InMemorySessionStore } from "../services/sessionStore";
 import type { DataChannelEventPayload } from "../types/realtime";
@@ -18,56 +17,6 @@ interface RealtimeRouterDeps {
   openAIClient: OpenAIRealtimeClient;
   sessionStore: InMemorySessionStore;
   runtimeEvents?: RuntimeEventStore;
-  meetingOrchestrator?: MeetingOrchestrator;
-}
-
-function isOutputAudioDeltaEventType(type: string): boolean {
-  const t = type.toLowerCase();
-  return (
-    t === "response.audio.delta" ||
-    t === "response.output_audio.delta" ||
-    t === "output_audio.delta" ||
-    t.endsWith(".output_audio.delta") ||
-    (t.includes("output_audio") && t.includes("delta")) ||
-    (t.includes("response.audio") && t.includes("delta"))
-  );
-}
-
-function readNumberField(obj: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "number" && Number.isFinite(v)) {
-      return v;
-    }
-  }
-  return undefined;
-}
-
-function extractPcm16DeltaFromPayload(payload: Record<string, unknown>): { base64: string; sampleRateHz: number } | null {
-  const nested: Record<string, unknown>[] = [payload];
-  const data = payload.data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    nested.push(data as Record<string, unknown>);
-  }
-  const response = payload.response;
-  if (response && typeof response === "object" && !Array.isArray(response)) {
-    nested.push(response as Record<string, unknown>);
-  }
-
-  for (const p of nested) {
-    const deltaRaw = p.delta;
-    if (typeof deltaRaw === "string" && deltaRaw.length > 0) {
-      const sampleRateHz =
-        readNumberField(p, [
-          "sampleRate",
-          "sample_rate",
-          "outputAudioSampleRate",
-          "output_audio_sample_rate"
-        ]) ?? 24_000;
-      return { base64: deltaRaw, sampleRateHz };
-    }
-  }
-  return null;
 }
 
 const keyAliases: Record<string, string> = {
@@ -330,36 +279,15 @@ export function createRealtimeRouter(deps: RealtimeRouterDeps): express.Router {
       );
     }
 
-    if (isOutputAudioDeltaEventType(event.type)) {
+    if (
+      event.type === "response.audio.delta" ||
+      event.type === "response.output_audio.delta" ||
+      event.type === "output_audio.delta"
+    ) {
       logger.info(
         { event: "openai_response_audio_delta_received", requestId: req.requestId, sessionId, meetingId },
         "openai_response_audio_delta_received"
       );
-      const extracted =
-        extractPcm16DeltaFromPayload(normalized) ??
-        (event.rawPayload && typeof event.rawPayload === "object" && !Array.isArray(event.rawPayload)
-          ? extractPcm16DeltaFromPayload(event.rawPayload as Record<string, unknown>)
-          : null);
-      if (extracted && deps.meetingOrchestrator && meetingId) {
-        try {
-          const pcm = Buffer.from(extracted.base64, "base64");
-          if (pcm.length > 0) {
-            const ts =
-              typeof normalized.timestampMs === "number" && Number.isFinite(normalized.timestampMs)
-                ? normalized.timestampMs
-                : Date.now();
-            deps.meetingOrchestrator.ingestAssistantOutputAudioPcm(
-              meetingId,
-              sessionId,
-              pcm,
-              extracted.sampleRateHz,
-              ts
-            );
-          }
-        } catch {
-          /* invalid base64 — non-fatal */
-        }
-      }
     }
 
     if (event.type === "response.done") {

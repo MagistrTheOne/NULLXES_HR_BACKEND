@@ -102,12 +102,7 @@ const envSchema = z.object({
   RUNPOD_WORKER_RETURN_FRAMES: z.coerce.boolean().default(true),
   VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
   AVATAR_VIDEO_ENABLED: z.coerce.boolean().default(true),
-  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
-  /**
-   * Gateway-owned Stream publisher (wrtc) + AvatarRuntimeEngine. Does not affect
-   * /realtime/token or OpenAI WebRTC; set false to bisect prod issues.
-   */
-  GATEWAY_STREAM_AGENT_ENABLED: z.coerce.boolean().default(true)
+  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static")
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {
