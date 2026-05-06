@@ -12,7 +12,15 @@ export type RuntimeEventType =
   | "candidate.admission.release"
   | "candidate.admission.decision"
   | "realtime.session.event"
+  | "realtime.orchestrated.started"
+  | "realtime.mic.append"
   | "avatar.event"
+  | "openai.orchestrator.started"
+  | "openai.mic.append"
+  | "openai.orchestrator.closed"
+  | "avatar.telemetry"
+  | "avatar.buffering"
+  | "avatar.degraded"
   | "stream.token.issued"
   | "observer_command_denied"
   | "runtime.lease.acquired"
@@ -81,6 +89,7 @@ export interface RuntimeSnapshot {
   admission?: CandidateAdmissionStatusView;
   avatar?: AvatarState | null;
   media: {
+    provider: "stream" | "livekit_bridge";
     streamCallType: string;
     streamCallId: string;
     candidateUserId: string;

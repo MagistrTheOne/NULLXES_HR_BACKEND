@@ -18,6 +18,8 @@ export interface RealtimeAudioConfig {
 export interface SessionConfig {
   type: "realtime";
   model: string;
+  /** GA Realtime: session-level output selection (prefer over per-response `modalities`). */
+  output_modalities?: Array<"audio" | "text">;
   audio: RealtimeAudioConfig;
   turn_detection?: {
     type: "server_vad";

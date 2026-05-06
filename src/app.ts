@@ -23,7 +23,9 @@ import {
 import { createTzAliasRouter } from "./routes/tzAlias.routes";
 import { createMeetingRouter } from "./routes/meeting.routes";
 import { createRealtimeRouter } from "./routes/realtime.routes";
+import { createOrchestratedRealtimeRouter } from "./routes/orchestratedRealtime.routes";
 import { createRuntimeRouter } from "./routes/runtime.routes";
+import { createLiveKitRouter } from "./routes/livekit.routes";
 import { AvatarClient } from "./services/avatarClient";
 import { AvatarStateStore } from "./services/avatarStateStore";
 import { PersistedAvatarStateStore } from "./services/persistedAvatarStateStore";
@@ -231,6 +233,9 @@ export async function createApp(): Promise<AppContext> {
       openAIClient,
       sessionStore,
       runtimeEvents
+    }),
+    createOrchestratedRealtimeRouter({
+      runtimeEvents
     })
   );
 
@@ -284,13 +289,17 @@ export async function createApp(): Promise<AppContext> {
 
   app.use("/interviews", createInterviewsRouter(interviewService));
   app.use("/api/v1", createTzAliasRouter(interviewService, jobAiClient));
+  app.use("/livekit", createLiveKitRouter({ meetingStore }));
   app.use(
     "/runtime",
     createRuntimeRouter({
       snapshots: runtimeSnapshots,
       events: runtimeEvents,
       leases: runtimeLeases,
-      meetingOrchestrator
+      meetingOrchestrator,
+      avatarClient,
+      avatarStateStore,
+      meetingStore
     })
   );
 

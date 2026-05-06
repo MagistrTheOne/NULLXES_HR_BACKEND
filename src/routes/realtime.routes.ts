@@ -253,6 +253,78 @@ export function createRealtimeRouter(deps: RealtimeRouterDeps): express.Router {
       "datachannel event received"
     );
 
+    // High-signal structured logs for production debugging.
+    if (event.type === "session.update") {
+      logger.info(
+        { event: "openai_session_update_sent", requestId: req.requestId, sessionId, meetingId },
+        "openai_session_update_sent"
+      );
+    }
+
+    if (event.type === "response.create") {
+      const raw = event.rawPayload as Record<string, unknown> | undefined;
+      const responseObj =
+        raw && typeof raw.response === "object" && raw.response !== null
+          ? (raw.response as Record<string, unknown>)
+          : undefined;
+      if (responseObj && "modalities" in responseObj) {
+        logger.warn(
+          { event: "openai_legacy_response_modalities", requestId: req.requestId, sessionId, meetingId },
+          "client sent deprecated response.modalities; OpenAI may reject"
+        );
+      }
+      logger.info(
+        { event: "openai_response_create_sent", requestId: req.requestId, sessionId, meetingId },
+        "openai_response_create_sent"
+      );
+    }
+
+    if (
+      event.type === "response.audio.delta" ||
+      event.type === "response.output_audio.delta" ||
+      event.type === "output_audio.delta"
+    ) {
+      logger.info(
+        { event: "openai_response_audio_delta_received", requestId: req.requestId, sessionId, meetingId },
+        "openai_response_audio_delta_received"
+      );
+    }
+
+    if (event.type === "response.done") {
+      logger.info(
+        { event: "openai_response_done", requestId: req.requestId, sessionId, meetingId },
+        "openai_response_done"
+      );
+    }
+
+    if (event.type === "error" || event.type === "openai.error" || String(event.type).endsWith(".error")) {
+      const payload = (event.rawPayload ?? event.normalizedPayload ?? {}) as Record<string, unknown>;
+      const errorObj =
+        payload.error && typeof payload.error === "object" ? (payload.error as Record<string, unknown>) : payload;
+      const code = errorObj.code ?? errorObj.type;
+      const param = errorObj.param;
+      const message =
+        typeof errorObj.message === "string"
+          ? errorObj.message
+          : typeof errorObj.text === "string"
+            ? errorObj.text
+            : undefined;
+      logger.error(
+        {
+          msg: "openai_error",
+          event: "openai_error",
+          requestId: req.requestId,
+          sessionId,
+          meetingId,
+          code,
+          param,
+          message,
+          eventType: typeof payload.type === "string" ? payload.type : event.type
+        },
+        "openai_error"
+      );
+    }
+
     res.status(202).json({
       status: "accepted",
       sessionId,

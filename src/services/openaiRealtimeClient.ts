@@ -22,6 +22,7 @@ function buildSessionConfig(overrides?: Partial<SessionConfig>): SessionConfig {
   return {
     type: "realtime",
     model: env.OPENAI_REALTIME_MODEL,
+    output_modalities: ["audio"],
     ...maybeTurnDetection,
     audio: {
       input: {

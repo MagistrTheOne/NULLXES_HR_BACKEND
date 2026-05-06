@@ -25,6 +25,7 @@ const POD_EVENT_TYPES = [
   "avatar_ready",
   "speaker_changed",
   "engine_degraded",
+  "telemetry",
   "transcript_delta",
   "transcript_completed",
   "response_done",
@@ -46,6 +47,7 @@ function eventTypeToPhase(type: (typeof POD_EVENT_TYPES)[number]): AvatarPhase {
       return "ready";
     case "speaker_changed":
     case "engine_degraded":
+    case "telemetry":
       return "starting";
     case "transcript_delta":
       return "transcript_delta";
@@ -97,10 +99,40 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
           ? (event.data.message as string)
           : undefined;
 
+      const telemetryPatch: {
+        videoModel?: "wan" | "ltx" | "echomimic";
+        clipLatencyMs?: number;
+        bufferSeconds?: number;
+        droppedFrames?: number;
+        gpuConnected?: boolean;
+        queueDepth?: number;
+        gpuMemoryMb?: number;
+      } | null =
+        event.type === "telemetry" || event.type === "engine_degraded" || event.type === "speaker_changed" || event.type === "avatar_ready"
+          ? {
+              videoModel:
+                event.data?.model === "echomimic"
+                  ? "echomimic"
+                  : event.data?.model === "ltx"
+                    ? "ltx"
+                    : event.data?.model === "wan"
+                      ? "wan"
+                      : undefined,
+              clipLatencyMs: typeof event.data?.clip_latency_ms === "number" ? (event.data.clip_latency_ms as number) : undefined,
+              bufferSeconds: typeof event.data?.buffer_seconds === "number" ? (event.data.buffer_seconds as number) : undefined,
+              droppedFrames: typeof event.data?.dropped_frames === "number" ? (event.data.dropped_frames as number) : undefined
+              ,
+              gpuConnected: typeof event.data?.gpu_connected === "boolean" ? (event.data.gpu_connected as boolean) : undefined,
+              queueDepth: typeof event.data?.queue_depth === "number" ? (event.data.queue_depth as number) : undefined,
+              gpuMemoryMb: typeof event.data?.gpu_memory_mb === "number" ? (event.data.gpu_memory_mb as number) : undefined
+            }
+          : null;
+
       const updated =
         event.type === "speaker_changed"
           ? deps.stateStore.patch(event.meeting_id, {
               sessionId: event.session_id,
+              ...(telemetryPatch ? telemetryPatch : {}),
               activeSpeaker:
                 event.data?.active_speaker === "candidate" ? "candidate" : event.data?.active_speaker === "assistant" ? "assistant" : undefined,
               videoAudioSource:
@@ -115,6 +147,7 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
           : event.type === "engine_degraded"
             ? deps.stateStore.patch(event.meeting_id, {
                 sessionId: event.session_id,
+                ...(telemetryPatch ? telemetryPatch : {}),
                 degradationLevel:
                   event.data?.level === "hard"
                     ? "hard"
@@ -124,6 +157,11 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
                         ? "fallback"
                         : "none"
               })
+            : event.type === "telemetry"
+              ? deps.stateStore.patch(event.meeting_id, {
+                  sessionId: event.session_id,
+                  ...(telemetryPatch ? telemetryPatch : {})
+                })
             : deps.stateStore.recordEvent(event.meeting_id, {
                 sessionId: event.session_id,
                 phase,
@@ -198,6 +236,13 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
         agentUserId: state.agentUserId,
         phase: state.phase,
         avatarReady: state.avatarReady,
+        videoModel: state.videoModel,
+        clipLatencyMs: state.clipLatencyMs,
+        bufferSeconds: state.bufferSeconds,
+        droppedFrames: state.droppedFrames,
+        gpuConnected: state.gpuConnected,
+        queueDepth: state.queueDepth,
+        gpuMemoryMb: state.gpuMemoryMb,
         startedAt: state.startedAt,
         lastEventAt: state.lastEventAt,
         lastError: state.lastError,

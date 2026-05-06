@@ -15,6 +15,8 @@ export interface CreateAvatarSessionInput {
   meetingId: string;
   /** Stable session id; the pod mounts the agent as `agent_<sessionId>`. */
   sessionId: string;
+  /** Optional override: pick video generator on the pod. */
+  videoModel?: "wan" | "ltx";
   /** Identity key passed to ARACHNE IdentityBank. Defaults to `AVATAR_DEFAULT_KEY`. */
   avatarKey?: string;
   /** Override the candidate participant id (defaults to `candidate-<meetingId>`). */
@@ -29,6 +31,18 @@ export interface CreateAvatarSessionInput {
   referenceImageUrl?: string;
   /** Optional emotion tag. Falls back to AVATAR_DEFAULT_EMOTION. */
   emotion?: string;
+  /** Optional LTX overrides (used when videoModel=ltx). */
+  ltx?: Partial<{
+    checkpoint: string;
+    variant: string;
+    width: number;
+    height: number;
+    num_frames: number;
+    fps: number;
+    steps: number;
+    cfg: number;
+    seed: number;
+  }>;
 }
 
 export interface CreateAvatarSessionResponse {
@@ -101,11 +115,25 @@ export class AvatarClient {
     });
 
     const referenceImageUrl = input.referenceImageUrl ?? env.AVATAR_REFERENCE_IMAGE_URL;
+    const resolvedVideoModel = input.videoModel ?? env.AVATAR_VIDEO_MODEL;
+    const ltxDefaults = {
+      checkpoint: env.AVATAR_LTX_CHECKPOINT,
+      variant: env.AVATAR_LTX_VARIANT,
+      width: env.AVATAR_LTX_WIDTH,
+      height: env.AVATAR_LTX_HEIGHT,
+      num_frames: env.AVATAR_LTX_NUM_FRAMES,
+      fps: env.AVATAR_LTX_FPS,
+      steps: env.AVATAR_LTX_STEPS,
+      cfg: env.AVATAR_LTX_CFG,
+      ...(typeof env.AVATAR_LTX_SEED === "number" ? { seed: env.AVATAR_LTX_SEED } : {})
+    };
     const body = {
       meeting_id: input.meetingId,
       session_id: input.sessionId,
       avatar_key: input.avatarKey ?? env.AVATAR_DEFAULT_KEY,
       transport: "webrtc-sfu" as const,
+      video_model: resolvedVideoModel,
+      ...(resolvedVideoModel === "ltx" ? { ltx: { ...ltxDefaults, ...(input.ltx ?? {}) } } : {}),
       duplex_mode: env.AVATAR_DUPLEX_MODE,
       video_audio_source: env.AVATAR_VIDEO_AUDIO_SOURCE,
       speaker_hold_ms: env.AVATAR_SPEAKER_HOLD_MS,
@@ -242,6 +270,40 @@ export class AvatarClient {
         { sessionId, err: (err as Error).message },
         "avatar pod delete-session failed"
       );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async postSessionCommand(
+    sessionId: string,
+    input: { type: "duplex_mode.set" | "video_audio_source.set" | "speaker.set" | "response.cancel"; payload?: Record<string, unknown> }
+  ): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new AvatarServiceUnavailableError(
+        "Avatar service is not configured (AVATAR_ENABLED / AVATAR_POD_URL / AVATAR_SHARED_TOKEN / STREAM_API_KEY / STREAM_API_SECRET)"
+      );
+    }
+    const url = `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/commands`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.sharedToken}`
+        },
+        body: JSON.stringify({ type: input.type, payload: input.payload ?? {} }),
+        signal: controller.signal
+      });
+      const text = await response.text().catch(() => "");
+      if (!response.ok) {
+        logger.warn({ url, status: response.status, body: text.slice(0, 500), sessionId, type: input.type }, "avatar pod command failed");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ sessionId, type: input.type, err: message }, "avatar pod command network error");
     } finally {
       clearTimeout(timer);
     }

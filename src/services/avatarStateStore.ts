@@ -26,6 +26,13 @@ export interface AvatarState {
   agentUserId?: string;
   phase: AvatarPhase;
   avatarReady: boolean;
+  videoModel?: "wan" | "ltx" | "echomimic";
+  clipLatencyMs?: number;
+  bufferSeconds?: number;
+  droppedFrames?: number;
+  gpuConnected?: boolean;
+  queueDepth?: number;
+  gpuMemoryMb?: number;
   activeSpeaker?: "assistant" | "candidate";
   duplexMode?: "single_assistant" | "duplex";
   videoAudioSource?: "tts" | "mic" | "auto";

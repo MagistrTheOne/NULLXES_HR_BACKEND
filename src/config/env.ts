@@ -66,6 +66,16 @@ const envSchema = z.object({
   AVATAR_REFERENCE_IMAGE_URL: z.string().url().optional(),
   AVATAR_DUPLEX_MODE: z.enum(["single_assistant", "duplex"]).default("single_assistant"),
   AVATAR_VIDEO_AUDIO_SOURCE: z.enum(["tts", "mic", "auto"]).default("tts"),
+  AVATAR_VIDEO_MODEL: z.enum(["wan", "ltx"]).default("wan"),
+  AVATAR_LTX_CHECKPOINT: z.string().min(1).default("Lightricks/LTX-2.3"),
+  AVATAR_LTX_VARIANT: z.string().min(1).default("ltx-2.3-22b-distilled-1.1"),
+  AVATAR_LTX_WIDTH: z.coerce.number().int().positive().default(832),
+  AVATAR_LTX_HEIGHT: z.coerce.number().int().positive().default(480),
+  AVATAR_LTX_NUM_FRAMES: z.coerce.number().int().positive().default(25),
+  AVATAR_LTX_FPS: z.coerce.number().int().positive().default(25),
+  AVATAR_LTX_STEPS: z.coerce.number().int().positive().default(8),
+  AVATAR_LTX_CFG: z.coerce.number().min(0).default(1.0),
+  AVATAR_LTX_SEED: z.coerce.number().int().optional(),
   AVATAR_SPEAKER_HOLD_MS: z.coerce.number().int().min(0).max(10_000).default(600),
   AVATAR_MIC_VAD_RMS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.02),
   AVATAR_MIC_VAD_SILENCE_MS: z.coerce.number().int().min(0).max(10_000).default(450),
@@ -74,9 +84,25 @@ const envSchema = z.object({
   STREAM_API_SECRET: z.string().min(1).optional(),
   STREAM_BASE_URL: z.string().url().default("https://video.stream-io-api.com"),
   STREAM_CALL_TYPE: z.string().min(1).default("default"),
+  // LiveKit (optional parallel SFU/agent transport)
+  LIVEKIT_URL: z.string().min(1).optional(),
+  LIVEKIT_API_KEY: z.string().min(1).optional(),
+  LIVEKIT_API_SECRET: z.string().min(1).optional(),
   // Post-processing artifacts (assistant audio capture + optional merge)
   ARTIFACTS_DIR: z.string().min(1).default("/var/lib/nullxes-hr/artifacts"),
   ASSISTANT_AUDIO_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000)
+  ,
+  // Inference worker (RunPod) - inference-only avatar generator.
+  RUNPOD_WORKER_URL: z.string().url().optional(),
+  RUNPOD_WORKER_MODE: z.enum(["sync", "async"]).default("async"),
+  RUNPOD_WORKER_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  RUNPOD_WORKER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
+  RUNPOD_WORKER_MAX_INFLIGHT: z.coerce.number().int().min(1).max(8).default(1),
+  RUNPOD_WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  RUNPOD_WORKER_RETURN_FRAMES: z.coerce.boolean().default(true),
+  VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
+  AVATAR_VIDEO_ENABLED: z.coerce.boolean().default(true),
+  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static")
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {

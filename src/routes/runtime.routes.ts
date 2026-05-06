@@ -63,6 +63,9 @@ export function createRuntimeRouter(deps: {
   events: RuntimeEventStore;
   leases: RuntimeLeaseStore;
   meetingOrchestrator?: import("../services/meetingOrchestrator").MeetingOrchestrator;
+  avatarClient?: import("../services/avatarClient").AvatarClient;
+  avatarStateStore?: import("../services/avatarStateStore").AvatarStateStore;
+  meetingStore?: import("../services/meetingStore").InMemoryMeetingStore;
 }): express.Router {
   const router = express.Router();
 
@@ -176,6 +179,35 @@ export function createRuntimeRouter(deps: {
       payload: input.payload ?? {}
     };
     await deps.events.recordCommand(command);
+    if (
+      deps.avatarClient &&
+      deps.avatarStateStore &&
+      deps.meetingStore &&
+      (input.type === "avatar.duplex_mode.set" || input.type === "avatar.video_audio_source.set" || input.type === "avatar.speaker.set")
+    ) {
+      const meeting = deps.meetingStore.getMeeting(req.params.meetingId);
+      const sessionId = deps.avatarStateStore.get(req.params.meetingId)?.sessionId ?? meeting?.sessionId ?? req.params.meetingId;
+      if (input.type === "avatar.duplex_mode.set") {
+        const duplexMode = input.payload?.duplexMode === "duplex" ? "duplex" : "single_assistant";
+        deps.avatarStateStore.patch(req.params.meetingId, { sessionId, duplexMode });
+        void deps.avatarClient.postSessionCommand(sessionId, { type: "duplex_mode.set", payload: { duplex_mode: duplexMode } });
+      }
+      if (input.type === "avatar.video_audio_source.set") {
+        const src =
+          input.payload?.videoAudioSource === "mic"
+            ? "mic"
+            : input.payload?.videoAudioSource === "auto"
+              ? "auto"
+              : "tts";
+        deps.avatarStateStore.patch(req.params.meetingId, { sessionId, videoAudioSource: src });
+        void deps.avatarClient.postSessionCommand(sessionId, { type: "video_audio_source.set", payload: { video_audio_source: src } });
+      }
+      if (input.type === "avatar.speaker.set") {
+        const sp = input.payload?.activeSpeaker === "candidate" ? "candidate" : "assistant";
+        deps.avatarStateStore.patch(req.params.meetingId, { sessionId, activeSpeaker: sp });
+        void deps.avatarClient.postSessionCommand(sessionId, { type: "speaker.set", payload: { active_speaker: sp } });
+      }
+    }
     if (input.type === "agent.force_next_question") {
       deps.meetingOrchestrator?.advanceQuestionIndex(req.params.meetingId, {
         actor: input.issuedBy ?? "unknown",

@@ -70,6 +70,8 @@ export class RuntimeSnapshotService {
       admission,
       avatar,
       media: {
+        provider:
+          meeting.metadata?.mediaProvider === "livekit_bridge" ? "livekit_bridge" : "stream",
         streamCallType: this.deps.streamCallType,
         streamCallId: meetingId,
         candidateUserId: `candidate-${meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-"),
