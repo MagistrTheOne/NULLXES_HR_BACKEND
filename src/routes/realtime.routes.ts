@@ -253,6 +253,38 @@ export function createRealtimeRouter(deps: RealtimeRouterDeps): express.Router {
       "datachannel event received"
     );
 
+    const payloadRoot = (event.rawPayload ?? event.normalizedPayload) as Record<string, unknown> | undefined;
+    const innerEventType = typeof payloadRoot?.type === "string" ? payloadRoot.type : undefined;
+    logger.info(
+      {
+        event: "openai_event_received",
+        eventType: event.type,
+        innerEventType,
+        requestId: req.requestId,
+        sessionId,
+        meetingId
+      },
+      "openai_event_received"
+    );
+
+    // Assistant audio: only if the browser forwards the matching server event payloads here.
+    // Pure WebRTC audio may remain inside the peer connection and never hit this HTTP path.
+
+    const normalizeOpenAiType = (t: string): string => {
+      const s = t.startsWith("openai.") ? t.slice("openai.".length) : t;
+      return s;
+    };
+    const typeCandidates = [event.type, innerEventType].filter((x): x is string => typeof x === "string" && x.length > 0);
+    const isOpenAiAudioDelta = typeCandidates.some((t) => {
+      const x = normalizeOpenAiType(t);
+      return (
+        x === "response.audio.delta" ||
+        x === "response.output_audio.delta" ||
+        x === "output_audio.delta" ||
+        (x.includes("output_audio") && x.includes("delta"))
+      );
+    });
+
     // High-signal structured logs for production debugging.
     if (event.type === "session.update") {
       logger.info(
@@ -279,11 +311,7 @@ export function createRealtimeRouter(deps: RealtimeRouterDeps): express.Router {
       );
     }
 
-    if (
-      event.type === "response.audio.delta" ||
-      event.type === "response.output_audio.delta" ||
-      event.type === "output_audio.delta"
-    ) {
+    if (isOpenAiAudioDelta) {
       logger.info(
         { event: "openai_response_audio_delta_received", requestId: req.requestId, sessionId, meetingId },
         "openai_response_audio_delta_received"
