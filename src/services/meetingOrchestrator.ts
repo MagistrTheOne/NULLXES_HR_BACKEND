@@ -38,6 +38,8 @@ export interface MeetingOrchestratorAvatarDeps {
 }
 
 export class MeetingOrchestrator {
+  private questionChangeHandler?: (input: { meetingId: string; questionIndex: number | null }) => void;
+
   constructor(
     private readonly store: InMemoryMeetingStore,
     private readonly stateMachine: MeetingStateMachine,
@@ -47,6 +49,10 @@ export class MeetingOrchestrator {
     private readonly runtimeEvents?: RuntimeEventStore,
     private readonly streamRecording?: StreamRecordingService
   ) {}
+
+  setQuestionChangeHandler(handler: (input: { meetingId: string; questionIndex: number | null }) => void): void {
+    this.questionChangeHandler = handler;
+  }
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
     if (this.store.exists(input.internalMeetingId)) {
@@ -240,6 +246,7 @@ export class MeetingOrchestrator {
     if (finalStatus === "completed" || finalStatus === "stopped_during_meeting") {
       this.postMeetingProcessor.enqueueCompleted(meeting);
     }
+    this.questionChangeHandler?.({ meetingId, questionIndex: null });
     this.stopRecording(meetingId);
     this.teardownAvatar(meetingId);
     return { meeting, transition };
@@ -290,6 +297,7 @@ export class MeetingOrchestrator {
       },
       "meeting failed"
     );
+    this.questionChangeHandler?.({ meetingId, questionIndex: null });
     this.teardownAvatar(meetingId);
     return { meeting, transition };
   }
@@ -365,6 +373,7 @@ export class MeetingOrchestrator {
       actor: input.actor,
       payload: { questionIndex: nextIndex, sequence: nextSeq, reason: input.reason, sourceId: sourceId || null }
     }).catch(() => undefined);
+    this.questionChangeHandler?.({ meetingId, questionIndex: nextIndex });
     return nextIndex;
   }
 

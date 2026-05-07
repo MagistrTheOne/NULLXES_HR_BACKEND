@@ -73,6 +73,10 @@ export class AudioRingBuffer {
     return c.startMs + durationMs;
   }
 
+  clear(): void {
+    this.chunks = [];
+  }
+
   private trim(): void {
     // Keep only last maxMs of audio based on newestMs.
     const newest = this.newestMs();

@@ -9,6 +9,7 @@ import { saveAssistantAudioArtifact } from "../services/assistantAudioArtifacts"
 import { StreamRecordingStateError, type StreamRecordingService } from "../services/streamRecordingService";
 import type { RuntimeEventStore } from "../services/runtimeEventStore";
 import type { MeetingControlWsHub } from "../services/meetingControlWsHub";
+import type { AvatarRuntimeSessionManager } from "../services/avatarRuntimeSessionManager";
 import type { FailMeetingInput, MeetingRecord, StartMeetingInput, StopMeetingInput } from "../types/meeting";
 import type { JobAiInterviewStatus, StoredInterview } from "../types/interview";
 
@@ -152,6 +153,7 @@ export function createMeetingRouter(
     interviews?: InterviewSyncService;
     runtimeEvents?: RuntimeEventStore;
     controlWsHub?: MeetingControlWsHub;
+    avatarRuntime?: AvatarRuntimeSessionManager;
   }
 ): express.Router {
   const router = express.Router();
@@ -244,6 +246,16 @@ export function createMeetingRouter(
         triggerSource: "nullxes_control_api",
         metadata
       });
+      void deps.avatarRuntime?.startForMeeting({
+        meetingId: internalId,
+        numericMeetingId: input.meetingId,
+        sessionId: internalId
+      }).catch((error: unknown) => {
+        logger.warn(
+          { meetingId: internalId, numericMeetingId: input.meetingId, error: error instanceof Error ? error.message : String(error) },
+          "avatar runtime start failed after control meeting start"
+        );
+      });
       deps.interviews.attachSession(stored.jobAiId, {
         meetingId: internalId,
         nullxesStatus: "in_meeting"
@@ -291,6 +303,17 @@ export function createMeetingRouter(
     );
 
     const result = orchestrator.startMeeting(input);
+    void deps?.avatarRuntime?.startForMeeting({
+      meetingId: input.internalMeetingId,
+      sessionId: input.sessionId ?? input.internalMeetingId,
+      numericMeetingId:
+        typeof input.metadata?.numericMeetingId === "number" ? input.metadata.numericMeetingId : undefined
+    }).catch((error: unknown) => {
+      logger.warn(
+        { meetingId: input.internalMeetingId, error: error instanceof Error ? error.message : String(error) },
+        "avatar runtime start failed after meeting start"
+      );
+    });
     res.status(201).json(result);
   }));
 
@@ -352,6 +375,7 @@ export function createMeetingRouter(
       actor: "nullxes_control_api",
       payload: { numericMeetingId: input.meetingId, stopReason: input.stopReason }
     }).catch(() => undefined);
+    deps.avatarRuntime?.stop(internalId, input.stopReason);
     deps.controlWsHub?.closeMeeting(input.meetingId, "meeting_stopped");
     res.status(200).json({
       ok: true,
@@ -365,12 +389,14 @@ export function createMeetingRouter(
   router.post("/:meetingId/stop", asyncHandler(async (req: Request, res: Response) => {
     const input = parseBody<StopMeetingInput>(stopMeetingSchema, req.body);
     const result = orchestrator.stopMeeting(req.params.meetingId, input);
+    deps?.avatarRuntime?.stop(req.params.meetingId, input.reason);
     res.status(200).json(result);
   }));
 
   router.post("/:meetingId/fail", asyncHandler(async (req: Request, res: Response) => {
     const input = parseBody<FailMeetingInput>(failMeetingSchema, req.body);
     const result = orchestrator.failMeeting(req.params.meetingId, input);
+    deps?.avatarRuntime?.stop(req.params.meetingId, input.reason);
     res.status(200).json(result);
   }));
 

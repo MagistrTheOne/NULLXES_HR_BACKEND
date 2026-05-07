@@ -26,6 +26,13 @@ type ControlWsEvent =
       text: string;
     };
 
+export type MeetingControlActivityRole = "candidate" | "ai_agent";
+export type MeetingControlActivityValue =
+  | "listening"
+  | "speaking"
+  | "thinking"
+  | "paused";
+
 const TERMINAL_JOBAI_STATUSES = new Set<JobAiInterviewStatus>([
   "completed",
   "stopped_during_meeting",
@@ -36,11 +43,18 @@ const TERMINAL_JOBAI_STATUSES = new Set<JobAiInterviewStatus>([
 export class MeetingControlWsHub {
   private readonly wss = new WebSocketServer({ noServer: true });
   private readonly sockets = new Map<number, Set<WebSocket>>();
+  private pauseChangeHandler?: (input: { numericMeetingId: number; internalMeetingId: string; pauseEnabled: boolean }) => void;
 
   constructor(
     private readonly interviews: InterviewSyncService,
     private readonly runtimeEvents?: RuntimeEventStore
   ) {}
+
+  setPauseChangeHandler(
+    handler: (input: { numericMeetingId: number; internalMeetingId: string; pauseEnabled: boolean }) => void
+  ): void {
+    this.pauseChangeHandler = handler;
+  }
 
   attach(server: Server): void {
     server.on("upgrade", (req, socket, head) => {
@@ -104,6 +118,56 @@ export class MeetingControlWsHub {
     }
   }
 
+  publishActivityMode(meetingId: number, role: "candidate", value: "listening" | "speaking"): void;
+  publishActivityMode(meetingId: number, role: "ai_agent", value: "listening" | "speaking" | "thinking" | "paused"): void;
+  publishActivityMode(meetingId: number, role: MeetingControlActivityRole, value: MeetingControlActivityValue): void {
+    if (role === "candidate" && value !== "listening" && value !== "speaking") {
+      return;
+    }
+    this.broadcast(meetingId, { eventType: "activity_mode_changed", role, value } as ControlWsEvent);
+    void this.runtimeEvents?.append({
+      type: "meeting.control.activity_mode_changed",
+      meetingId: internalMeetingIdFor(meetingId),
+      actor: "gateway",
+      payload: { numericMeetingId: meetingId, role, value }
+    }).catch(() => undefined);
+  }
+
+  publishCurrentQuestion(meetingId: number, value: number | null): void {
+    this.broadcast(meetingId, { eventType: "current_question_changed", value });
+    void this.runtimeEvents?.append({
+      type: "meeting.control.current_question_changed",
+      meetingId: internalMeetingIdFor(meetingId),
+      actor: "gateway",
+      payload: { numericMeetingId: meetingId, value }
+    }).catch(() => undefined);
+  }
+
+  publishSubtitlesDelta(meetingId: number, text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    this.broadcast(meetingId, { eventType: "subtitles_delta", text: trimmed });
+    void this.runtimeEvents?.append({
+      type: "meeting.control.subtitles_delta",
+      meetingId: internalMeetingIdFor(meetingId),
+      actor: "gateway",
+      payload: { numericMeetingId: meetingId, chars: trimmed.length }
+    }).catch(() => undefined);
+  }
+
+  getConnectionCount(meetingId?: number): number {
+    if (typeof meetingId === "number") {
+      return this.sockets.get(meetingId)?.size ?? 0;
+    }
+    let total = 0;
+    for (const sockets of this.sockets.values()) {
+      total += sockets.size;
+    }
+    return total;
+  }
+
   closeMeeting(meetingId: number, reason: string): void {
     const sockets = this.sockets.get(meetingId);
     if (!sockets) {
@@ -152,11 +216,8 @@ export class MeetingControlWsHub {
       payload: { numericMeetingId: meetingId, pauseEnabled }
     }).catch(() => undefined);
 
-    this.broadcast(meetingId, {
-      eventType: "activity_mode_changed",
-      role: "ai_agent",
-      value: pauseEnabled ? "paused" : "listening"
-    });
+    this.pauseChangeHandler?.({ numericMeetingId: meetingId, internalMeetingId, pauseEnabled });
+    this.publishActivityMode(meetingId, "ai_agent", pauseEnabled ? "paused" : "listening");
   }
 
   private addSocket(meetingId: number, ws: WebSocket): void {
@@ -174,6 +235,12 @@ export class MeetingControlWsHub {
     if (sockets.size === 0) {
       this.sockets.delete(meetingId);
     }
+    void this.runtimeEvents?.append({
+      type: "meeting.control.ws.disconnected",
+      meetingId: internalMeetingIdFor(meetingId),
+      actor: "frontend",
+      payload: { numericMeetingId: meetingId, connectionCount: this.getConnectionCount(meetingId) }
+    }).catch(() => undefined);
   }
 
   private parseMeetingId(req: IncomingMessage): { matches: boolean; meetingId?: number } {

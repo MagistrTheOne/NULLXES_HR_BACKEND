@@ -77,6 +77,19 @@ export class RunpodWorkerClient {
     return Boolean(this.baseUrl);
   }
 
+  async checkHealth(): Promise<{ ok: boolean; status?: number; detail?: unknown; latencyMs?: number }> {
+    if (!this.baseUrl) {
+      return { ok: false, detail: "RUNPOD_WORKER_URL is not configured" };
+    }
+    const startedAt = Date.now();
+    const response = await this.safeJsonFetch(`${this.baseUrl}/health`, { method: "GET" });
+    const latencyMs = Date.now() - startedAt;
+    if (!response.ok) {
+      return { ok: false, detail: response.error, latencyMs };
+    }
+    return { ok: true, detail: response.data, latencyMs };
+  }
+
   async generateClip(input: RunpodGenerateClipRequest): Promise<RunpodGenerateClipResponse> {
     if (!this.baseUrl) {
       throw new Error("RUNPOD_WORKER_URL is not configured");

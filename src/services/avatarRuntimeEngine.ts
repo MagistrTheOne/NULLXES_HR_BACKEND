@@ -5,7 +5,7 @@ import { AudioRingBuffer } from "./audioRingBuffer";
 import { ClipBuffer, type AvatarClip } from "./clipBuffer";
 import { RunpodWorkerClient } from "./runpodWorkerClient";
 import type { OpenAiRealtimeOrchestrator } from "./openaiOrchestrator";
-import { StreamAgentPublisher } from "./streamAgentPublisher";
+import type { AgentMediaPublisher } from "./streamAgentPublisher";
 import { withRetries } from "./retry";
 import { createStaticI420Frame } from "./staticI420Frame";
 
@@ -15,7 +15,7 @@ function base64FromBytes(bytes: Uint8Array): string {
 
 export class AvatarRuntimeEngine {
   private readonly orchestrator: OpenAiRealtimeOrchestrator;
-  private readonly publisher: StreamAgentPublisher;
+  private readonly publisher: AgentMediaPublisher;
   private readonly runpod: RunpodWorkerClient;
   private readonly audioRing: AudioRingBuffer;
   private readonly clipBuffer: ClipBuffer;
@@ -43,10 +43,16 @@ export class AvatarRuntimeEngine {
   private lastVideoTickAtMs = 0;
   private staticFallbackFrame: { width: number; height: number; data: Buffer } | null = null;
   private lastAvatarAudioPcmLogAtMs = 0;
+  private paused = false;
+  private stoppedAtMs: number | null = null;
+  private staleClipDrops = 0;
+  private publishedFrames = 0;
+  private lastPublishFpsSampleAtMs = Date.now();
+  private lastPublishedFramesSample = 0;
 
   constructor(input: {
     orchestrator: OpenAiRealtimeOrchestrator;
-    publisher: StreamAgentPublisher;
+    publisher: AgentMediaPublisher;
     runpod: RunpodWorkerClient;
     runtimeEvents?: RuntimeEventStore;
     fps?: number;
@@ -118,6 +124,7 @@ export class AvatarRuntimeEngine {
    */
   ingestOpenAiTtsPcm16(input: { pcm16: Buffer; sampleRateHz: number; timestampMs: number }): void {
     if (!this.running || !this.meetingId || !this.sessionId) return;
+    if (this.paused || this.stoppedAtMs !== null) return;
 
     const now = Date.now();
     if (now - this.lastAvatarAudioPcmLogAtMs >= 500) {
@@ -155,6 +162,9 @@ export class AvatarRuntimeEngine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.stoppedAtMs = Date.now();
+    this.audioRing.clear();
+    this.clipBuffer.invalidateEpoch("runtime_stop");
     this.stopController?.abort();
     this.stopController = null;
     if (this.videoTickTimer) clearInterval(this.videoTickTimer);
@@ -162,6 +172,26 @@ export class AvatarRuntimeEngine {
     this.videoTickTimer = null;
     this.telemetryTimer = null;
     void this.publisher.close().catch(() => undefined);
+  }
+
+  pause(reason = "runtime_pause"): void {
+    if (!this.running) return;
+    this.paused = true;
+    this.audioRing.clear();
+    this.onInterruption(reason);
+  }
+
+  resume(): void {
+    if (!this.running) return;
+    this.paused = false;
+    this.audioRing.clear();
+    this.onInterruption("runtime_resume_new_epoch");
+  }
+
+  interrupt(reason: string): void {
+    if (!this.running) return;
+    this.audioRing.clear();
+    this.onInterruption(reason);
   }
 
   private onInterruption(reason: string): void {
@@ -177,6 +207,7 @@ export class AvatarRuntimeEngine {
 
   private async videoTick(): Promise<void> {
     if (!this.running || !this.meetingId) return;
+    if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED || env.VIDEO_MODEL !== "echomimic") return;
     const audioClock = this.orchestrator.getAudioClockMs(this.meetingId) ?? Date.now();
     const targetTime = audioClock - this.latencyCompensationMs;
@@ -188,17 +219,20 @@ export class AvatarRuntimeEngine {
         const height = 512;
         this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
         await this.publisher
-          .publishVideoFrameI420(this.staticFallbackFrame.data, width, height, targetTime)
+          .publishVideoFrameI420(this.idleFallbackFrame(this.staticFallbackFrame.data, width, height), width, height, targetTime)
           .catch(() => undefined);
+        this.publishedFrames += 1;
       }
       return;
     }
     // Publish I420 frame.
     await this.publisher.publishVideoFrameI420(frame.i420, frame.width, frame.height, targetTime).catch(() => undefined);
+    this.publishedFrames += 1;
   }
 
   private async maybeGenerateClip(): Promise<void> {
     if (!this.running || !this.meetingId || !this.sessionId) return;
+    if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
     if (!this.runpod.isConfigured()) return;
     if (env.VIDEO_MODEL !== "echomimic") return;
@@ -286,6 +320,14 @@ export class AvatarRuntimeEngine {
 
       // Ignore stale responses after interruption.
       if (epoch !== this.clipBuffer.getEpoch() || result.epoch !== epoch) {
+        this.staleClipDrops += 1;
+        void this.runtimeEvents?.append({
+          type: "avatar.degraded",
+          meetingId: this.meetingId,
+          sessionId: this.sessionId,
+          actor: "gateway",
+          payload: { reason: "stale_clip_dropped", generationEpoch: epoch, staleClipDrops: this.staleClipDrops }
+        }).catch(() => undefined);
         return;
       }
 
@@ -327,6 +369,10 @@ export class AvatarRuntimeEngine {
     const audioClock = this.orchestrator.getAudioClockMs(this.meetingId) ?? nowMs;
     const audioClockDriftMs = nowMs - audioClock;
     const underflowSeconds = this.underflowTicks / this.fps;
+    const elapsedMs = Math.max(1, nowMs - this.lastPublishFpsSampleAtMs);
+    const publishFps = ((this.publishedFrames - this.lastPublishedFramesSample) * 1000) / elapsedMs;
+    this.lastPublishFpsSampleAtMs = nowMs;
+    this.lastPublishedFramesSample = this.publishedFrames;
     void this.runtimeEvents?.append({
       type: "avatar.telemetry",
       meetingId: this.meetingId,
@@ -338,9 +384,22 @@ export class AvatarRuntimeEngine {
         droppedFrames: stats.droppedFrames,
         underflowSeconds,
         queueDepth: this.inFlight,
-        audioClockDriftMs
+        audioClockDriftMs,
+        paused: this.paused,
+        staleClipDrops: this.staleClipDrops,
+        publishFps
       }
     }).catch(() => undefined);
+  }
+
+  private idleFallbackFrame(frame: Buffer, width: number, height: number): Buffer {
+    const out = Buffer.from(frame);
+    const ySize = width * height;
+    const pulse = Math.round(Math.sin(Date.now() / 450) * 4);
+    for (let i = 0; i < ySize; i += 4) {
+      out[i] = Math.max(0, Math.min(255, out[i] + pulse));
+    }
+    return out;
   }
 }
 

@@ -40,6 +40,7 @@ import {
 } from "./services/observerSessionTicketStore";
 import { ObserverSessionTicketSigner } from "./services/observerSessionTicketSigner";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
+import { AvatarRuntimeSessionManager } from "./services/avatarRuntimeSessionManager";
 import { MeetingControlWsHub } from "./services/meetingControlWsHub";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
@@ -58,6 +59,7 @@ export interface AppContext {
   webhookDispatcher: WebhookDispatcher;
   postMeetingProcessor: PostMeetingProcessor;
   meetingControlWsHub: MeetingControlWsHub;
+  avatarRuntimeSessionManager: AvatarRuntimeSessionManager;
   storage: StorageBackends;
 }
 
@@ -86,6 +88,18 @@ export async function createApp(): Promise<AppContext> {
     prefix: env.REDIS_PREFIX
   });
   const meetingControlWsHub = new MeetingControlWsHub(interviewService, runtimeEvents);
+  const avatarRuntimeSessionManager = new AvatarRuntimeSessionManager({
+    runtimeEvents,
+    controlWsHub: meetingControlWsHub
+  });
+  meetingControlWsHub.setPauseChangeHandler(({ internalMeetingId, pauseEnabled }) => {
+    if (pauseEnabled) {
+      avatarRuntimeSessionManager.pause(internalMeetingId, "meeting_control_ws");
+      return;
+    }
+    avatarRuntimeSessionManager.resume(internalMeetingId);
+  });
+  avatarRuntimeSessionManager.startSweeper();
   const avatarClient = new AvatarClient();
   const avatarStateStore =
     env.STORAGE_BACKEND === "redis" && storage.redis
@@ -127,6 +141,9 @@ export async function createApp(): Promise<AppContext> {
     runtimeEvents,
     streamRecordingService
   );
+  meetingOrchestrator.setQuestionChangeHandler(({ meetingId, questionIndex }) => {
+    avatarRuntimeSessionManager.publishCurrentQuestion(meetingId, questionIndex);
+  });
   const runtimeSnapshots = new RuntimeSnapshotService({
     meetingStore,
     sessionStore,
@@ -235,7 +252,8 @@ export async function createApp(): Promise<AppContext> {
     createRealtimeRouter({
       openAIClient,
       sessionStore,
-      runtimeEvents
+      runtimeEvents,
+      avatarRuntime: avatarRuntimeSessionManager
     }),
     createOrchestratedRealtimeRouter({
       runtimeEvents
@@ -254,7 +272,8 @@ export async function createApp(): Promise<AppContext> {
       recordings: streamRecordingService,
       interviews: interviewService,
       runtimeEvents,
-      controlWsHub: meetingControlWsHub
+      controlWsHub: meetingControlWsHub,
+      avatarRuntime: avatarRuntimeSessionManager
     })
   );
 
@@ -335,5 +354,13 @@ export async function createApp(): Promise<AppContext> {
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  return { app, sessionStore, webhookDispatcher, postMeetingProcessor, meetingControlWsHub, storage };
+  return {
+    app,
+    sessionStore,
+    webhookDispatcher,
+    postMeetingProcessor,
+    meetingControlWsHub,
+    avatarRuntimeSessionManager,
+    storage
+  };
 }

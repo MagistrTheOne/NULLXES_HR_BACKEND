@@ -7,6 +7,13 @@ import { resamplePcm16Linear } from "./audioResampler";
 
 export type StreamPublisherState = "idle" | "connecting" | "connected" | "failed" | "closed";
 
+export interface AgentMediaPublisher {
+  connect(input: { meetingId: string; sessionId: string; audioInRateHz?: number }): Promise<void>;
+  publishAudioPcm16(chunk: Buffer, timestampMs: number, inputSampleRateHz?: number): Promise<void>;
+  publishVideoFrameI420(i420: Buffer, width: number, height: number, timestampMs: number): Promise<void>;
+  close(): Promise<void>;
+}
+
 type StreamCall = ReturnType<StreamVideoClient["call"]>;
 
 type WrtcModule = typeof import("@roamhq/wrtc");
@@ -52,7 +59,7 @@ function decodePcm16Le(buf: Buffer): Int16Array {
  *
  * Uses the same polyfills pattern proven in `backend/livekit-bridge/src/index.mjs`.
  */
-export class StreamAgentPublisher {
+export class StreamAgentPublisher implements AgentMediaPublisher {
   private state: StreamPublisherState = "idle";
   private meetingId: string | null = null;
   private sessionId: string | null = null;
