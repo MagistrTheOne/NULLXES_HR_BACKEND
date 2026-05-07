@@ -59,6 +59,14 @@ export interface PrototypeCandidateIdentity {
   updatedAt: string;
 }
 
+export type InviteTokenRole = "candidate" | "observer" | "admin";
+
+export interface InterviewInviteTokens {
+  candidate: string;
+  observer: string;
+  admin: string;
+}
+
 export interface StoredInterview {
   jobAiId: number;
   rawPayload: JobAiInterview;
@@ -68,6 +76,9 @@ export interface StoredInterview {
 
 export interface InterviewProjection {
   jobAiId: number;
+  meetingId: number;
+  meetingControlKey: string;
+  inviteTokens: InterviewInviteTokens;
   nullxesMeetingId?: string;
   sessionId?: string;
   candidateFirstName: string;

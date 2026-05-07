@@ -36,6 +36,10 @@ function assertIngestSecret(req: Request): void {
   }
 }
 
+function buildInterviewInviteUrl(inviteToken: string): string {
+  return `${env.NULLXES_INTERVIEW_FRONTEND_BASE_URL.replace(/\/+$/, "")}/join/${inviteToken}`;
+}
+
 function normalizePromptPayload(payload: unknown): {
   mainPrompt: string | null;
   idkAnswers: string[];
@@ -66,9 +70,9 @@ export function createJobAiRouter(service: InterviewSyncService, jobAiClient: Jo
     res.status(202).json({
       interview: stored.rawPayload,
       projection: stored.projection,
-      // Relative links for JobAI UI: base URL is resolved on caller side.
-      candidateUrl: stored.projection.candidateEntryPath,
-      spectatorUrl: stored.projection.spectatorEntryPath
+      candidateUrl: buildInterviewInviteUrl(stored.projection.inviteTokens.candidate),
+      spectatorUrl: buildInterviewInviteUrl(stored.projection.inviteTokens.observer),
+      adminUrl: buildInterviewInviteUrl(stored.projection.inviteTokens.admin)
     });
   }));
 

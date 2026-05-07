@@ -3,7 +3,7 @@ import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import { InMemoryInterviewStore, splitRuFullName } from "./interviewStore";
 import { JobAiClient } from "./jobaiClient";
-import { allowedJobAiTransitions, type JobAiInterview, type JobAiInterviewStatus, type StoredInterview } from "../types/interview";
+import { allowedJobAiTransitions, type InviteTokenRole, type JobAiInterview, type JobAiInterviewStatus, type StoredInterview } from "../types/interview";
 
 const KNOWN_STATUSES = new Set<string>(Object.keys(allowedJobAiTransitions));
 const TERMINAL_LOCK_STATUSES = new Set<JobAiInterviewStatus>(["canceled", "completed"]);
@@ -110,6 +110,10 @@ export class InterviewSyncService {
       throw new HttpError(404, "Interview not found");
     }
     return interview;
+  }
+
+  getInterviewByInviteToken(inviteToken: string): { interview: StoredInterview; role: InviteTokenRole } | undefined {
+    return this.store.getByInviteToken(inviteToken);
   }
 
   async transitionStatus(jobAiId: number, status: JobAiInterviewStatus): Promise<StoredInterview> {

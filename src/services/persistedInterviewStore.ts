@@ -33,7 +33,10 @@ export class PersistedInterviewStore extends InMemoryInterviewStore {
         if (!payload) continue;
         const record = JSON.parse(payload) as StoredInterview;
         if (record && typeof record.jobAiId === "number") {
-          this.hydrate(record);
+          const changed = this.hydrate(record);
+          if (changed) {
+            await this.persistInterview(record.jobAiId);
+          }
           restored += 1;
         }
       } catch (error) {

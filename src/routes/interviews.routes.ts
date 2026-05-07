@@ -1,9 +1,10 @@
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
+import { env } from "../config/env";
 import { HttpError } from "../middleware/errorHandler";
 import { serializeInterviewDetail, serializeInterviewListItem } from "../services/interviewSerialization";
 import { InterviewSyncService } from "../services/interviewSyncService";
-import type { JobAiInterviewStatus } from "../types/interview";
+import type { JobAiInterviewStatus, StoredInterview } from "../types/interview";
 
 const statusSchema = z.object({
   status: z.enum([
@@ -26,6 +27,17 @@ const sessionLinkSchema = z.object({
 const prototypeFioSchema = z.object({
   fullName: z.string().max(500)
 });
+
+const inviteTokenLookupSchema = z.object({
+  inviteToken: z.string().regex(/^[A-Za-z0-9]{10}$/)
+});
+
+const FINISHED_JOBAI_STATUSES = new Set<JobAiInterviewStatus>([
+  "completed",
+  "stopped_during_meeting",
+  "canceled",
+  "meeting_not_started"
+]);
 
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
@@ -54,6 +66,33 @@ function parseIntegerQuery(value: unknown, fallback: number): number {
   return Math.floor(parsed);
 }
 
+function readBearerToken(req: Request): string | undefined {
+  const auth = req.header("authorization") ?? req.header("Authorization");
+  if (!auth) {
+    return undefined;
+  }
+  const trimmed = auth.trim();
+  const bearer = /^Bearer\s+(.+)$/i.exec(trimmed) ?? /^Bearer:\s*(.+)$/i.exec(trimmed);
+  return bearer?.[1]?.trim();
+}
+
+function isFinishedInterview(stored: StoredInterview): boolean {
+  return (
+    FINISHED_JOBAI_STATUSES.has(stored.rawPayload.status) ||
+    stored.projection.nullxesStatus === "completed" ||
+    stored.projection.nullxesStatus === "stopped_during_meeting"
+  );
+}
+
+function questionsCount(stored: StoredInterview): number | null {
+  const questions = stored.rawPayload.specialty?.questions;
+  return Array.isArray(questions) ? questions.length : null;
+}
+
+function nullableText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 export function createInterviewsRouter(service: InterviewSyncService): express.Router {
   const router = express.Router();
 
@@ -71,6 +110,52 @@ export function createInterviewsRouter(service: InterviewSyncService): express.R
       count: result.count
     });
   }));
+
+  router.post("/get-by-token", (req: Request, res: Response) => {
+    if (!env.NULLXES_INTERVIEW_LOOKUP_AUTH_TOKEN) {
+      res.status(503).json({ errorCode: "invite_lookup_not_configured" });
+      return;
+    }
+
+    const providedToken = readBearerToken(req);
+    if (providedToken !== env.NULLXES_INTERVIEW_LOOKUP_AUTH_TOKEN) {
+      res.status(401).json({ errorCode: "unauthorized" });
+      return;
+    }
+
+    const parsed = inviteTokenLookupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ errorCode: "invalid_request" });
+      return;
+    }
+
+    const resolved = service.getInterviewByInviteToken(parsed.data.inviteToken);
+    if (!resolved) {
+      res.status(404).json({ errorCode: "interview_not_found" });
+      return;
+    }
+
+    if (isFinishedInterview(resolved.interview)) {
+      res.status(400).json({ errorCode: "interview_already_finished" });
+      return;
+    }
+
+    const { interview, role } = resolved;
+    res.status(200).json({
+      role,
+      candidate: {
+        firstName: interview.projection.candidateFirstName,
+        lastName: interview.projection.candidateLastName,
+        patronymic: null
+      },
+      meetingAt: interview.projection.meetingAt,
+      aiWSURL: env.NULLXES_AI_WS_URL,
+      companyName: nullableText(interview.rawPayload.companyName),
+      questionsCount: questionsCount(interview),
+      meetingId: interview.projection.meetingId,
+      meetingControlKey: interview.projection.meetingControlKey
+    });
+  });
 
   router.get("/:id", asyncHandler(async (req: Request, res: Response) => {
     const id = parseIntegerParam(req.params.id, "interview id");
