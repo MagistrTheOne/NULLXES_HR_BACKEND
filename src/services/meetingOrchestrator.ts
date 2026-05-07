@@ -71,6 +71,10 @@ export class MeetingOrchestrator {
     };
   }
 
+  tryGetMeeting(meetingId: string): MeetingRecord | undefined {
+    return this.store.getMeeting(meetingId);
+  }
+
   private kickoffRecording(meetingId: string): void {
     if (!this.streamRecording || !this.streamRecording.isConfigured()) {
       return;

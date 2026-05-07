@@ -33,6 +33,7 @@ export function splitRuFullName(fullName: string): { candidateLastName: string; 
 export class InMemoryInterviewStore {
   protected readonly byJobAiId = new Map<number, StoredInterview>();
   protected readonly byInviteToken = new Map<string, { jobAiId: number; role: InviteTokenRole }>();
+  protected readonly byNumericMeetingId = new Map<number, number>();
   protected readonly meetingIds = new Set<number>();
   protected lastSyncAt: string | null = null;
   protected lastSyncResult: "idle" | "success" | "error" = "idle";
@@ -117,6 +118,11 @@ export class InMemoryInterviewStore {
       return undefined;
     }
     return { interview, role: indexed.role };
+  }
+
+  getByNumericMeetingId(meetingId: number): StoredInterview | undefined {
+    const jobAiId = this.byNumericMeetingId.get(meetingId);
+    return typeof jobAiId === "number" ? this.byJobAiId.get(jobAiId) : undefined;
   }
 
   list(skip = 0, take = 20): { interviews: StoredInterview[]; count: number } {
@@ -294,12 +300,14 @@ export class InMemoryInterviewStore {
 
   private indexInviteProjection(record: StoredInterview): void {
     this.meetingIds.add(record.projection.meetingId);
+    this.byNumericMeetingId.set(record.projection.meetingId, record.jobAiId);
     this.byInviteToken.set(record.projection.inviteTokens.candidate, { jobAiId: record.jobAiId, role: "candidate" });
     this.byInviteToken.set(record.projection.inviteTokens.observer, { jobAiId: record.jobAiId, role: "observer" });
     this.byInviteToken.set(record.projection.inviteTokens.admin, { jobAiId: record.jobAiId, role: "admin" });
   }
 
   private unindexInviteProjection(record: StoredInterview): void {
+    this.byNumericMeetingId.delete(record.projection.meetingId);
     for (const [token, indexed] of this.byInviteToken.entries()) {
       if (indexed.jobAiId === record.jobAiId) {
         this.byInviteToken.delete(token);

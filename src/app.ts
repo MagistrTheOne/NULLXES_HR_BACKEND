@@ -40,6 +40,7 @@ import {
 } from "./services/observerSessionTicketStore";
 import { ObserverSessionTicketSigner } from "./services/observerSessionTicketSigner";
 import { MeetingOrchestrator } from "./services/meetingOrchestrator";
+import { MeetingControlWsHub } from "./services/meetingControlWsHub";
 import { MeetingStateMachine } from "./services/meetingStateMachine";
 import { OpenAIRealtimeClient } from "./services/openaiRealtimeClient";
 import { PostMeetingProcessor } from "./services/postMeetingProcessor";
@@ -56,6 +57,7 @@ export interface AppContext {
   sessionStore: InMemorySessionStore;
   webhookDispatcher: WebhookDispatcher;
   postMeetingProcessor: PostMeetingProcessor;
+  meetingControlWsHub: MeetingControlWsHub;
   storage: StorageBackends;
 }
 
@@ -83,6 +85,7 @@ export async function createApp(): Promise<AppContext> {
     redis: storage.redis,
     prefix: env.REDIS_PREFIX
   });
+  const meetingControlWsHub = new MeetingControlWsHub(interviewService, runtimeEvents);
   const avatarClient = new AvatarClient();
   const avatarStateStore =
     env.STORAGE_BACKEND === "redis" && storage.redis
@@ -249,7 +252,9 @@ export async function createApp(): Promise<AppContext> {
     },
     createMeetingRouter(meetingOrchestrator, {
       recordings: streamRecordingService,
-      interviews: interviewService
+      interviews: interviewService,
+      runtimeEvents,
+      controlWsHub: meetingControlWsHub
     })
   );
 
@@ -330,5 +335,5 @@ export async function createApp(): Promise<AppContext> {
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  return { app, sessionStore, webhookDispatcher, postMeetingProcessor, storage };
+  return { app, sessionStore, webhookDispatcher, postMeetingProcessor, meetingControlWsHub, storage };
 }

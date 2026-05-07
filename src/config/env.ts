@@ -36,6 +36,7 @@ const envSchema = z.object({
   NULLXES_INTERVIEW_FRONTEND_BASE_URL: z.string().url().default("https://dev.job-ai.ru/interview"),
   NULLXES_INTERVIEW_LOOKUP_AUTH_TOKEN: z.string().min(8).optional(),
   NULLXES_AI_WS_URL: z.string().min(1).default("ws://test.com"),
+  NULLXES_AI_WS_URL_TEMPLATE: z.string().min(1).optional(),
   STORAGE_BACKEND: z.enum(["memory", "redis"]).default("memory"),
   REDIS_URL: z.string().url().optional(),
   REDIS_PREFIX: z.string().default("nullxes:hr-ai"),

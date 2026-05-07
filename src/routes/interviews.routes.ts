@@ -93,6 +93,14 @@ function nullableText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function aiWsUrl(meetingId: number): string {
+  const template = env.NULLXES_AI_WS_URL_TEMPLATE?.trim();
+  if (template) {
+    return template.replace(/\{meetingId\}/g, String(meetingId));
+  }
+  return env.NULLXES_AI_WS_URL;
+}
+
 export function createInterviewsRouter(service: InterviewSyncService): express.Router {
   const router = express.Router();
 
@@ -149,7 +157,7 @@ export function createInterviewsRouter(service: InterviewSyncService): express.R
         patronymic: null
       },
       meetingAt: interview.projection.meetingAt,
-      aiWSURL: env.NULLXES_AI_WS_URL,
+      aiWSURL: aiWsUrl(interview.projection.meetingId),
       companyName: nullableText(interview.rawPayload.companyName),
       questionsCount: questionsCount(interview),
       meetingId: interview.projection.meetingId,

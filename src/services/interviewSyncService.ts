@@ -116,6 +116,10 @@ export class InterviewSyncService {
     return this.store.getByInviteToken(inviteToken);
   }
 
+  getInterviewByNumericMeetingId(meetingId: number): StoredInterview | undefined {
+    return this.store.getByNumericMeetingId(meetingId);
+  }
+
   async transitionStatus(jobAiId: number, status: JobAiInterviewStatus): Promise<StoredInterview> {
     const current = await this.getInterview(jobAiId, !this.store.getByJobAiId(jobAiId));
     const fromStatus = current.rawPayload.status;

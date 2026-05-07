@@ -7,7 +7,10 @@ import { MeetingOrchestrator } from "../services/meetingOrchestrator";
 import type { InterviewSyncService } from "../services/interviewSyncService";
 import { saveAssistantAudioArtifact } from "../services/assistantAudioArtifacts";
 import { StreamRecordingStateError, type StreamRecordingService } from "../services/streamRecordingService";
-import type { FailMeetingInput, StartMeetingInput, StopMeetingInput } from "../types/meeting";
+import type { RuntimeEventStore } from "../services/runtimeEventStore";
+import type { MeetingControlWsHub } from "../services/meetingControlWsHub";
+import type { FailMeetingInput, MeetingRecord, StartMeetingInput, StopMeetingInput } from "../types/meeting";
+import type { JobAiInterviewStatus, StoredInterview } from "../types/interview";
 
 const startMeetingSchema = z.object({
   internalMeetingId: z.string().min(1),
@@ -16,10 +19,20 @@ const startMeetingSchema = z.object({
   sessionId: z.string().min(1).optional()
 });
 
+const controlStartMeetingSchema = z.object({
+  meetingId: z.number().int().positive(),
+  agentRTMPURL: z.string().min(1)
+});
+
 const stopMeetingSchema = z.object({
   reason: z.enum(["manual_stop", "superseded_by_other_meeting", "error"]),
   finalStatus: z.enum(["stopped_during_meeting", "completed"]).optional(),
   metadata: z.record(z.unknown()).optional()
+});
+
+const controlStopMeetingSchema = z.object({
+  meetingId: z.number().int().positive(),
+  stopReason: z.enum(["candidate_leaved", "candidate_stopped_ui"])
 });
 
 const failMeetingSchema = z.object({
@@ -71,6 +84,13 @@ const openAiVoiceSchema = z.object({
   voice: z.string().max(80).optional().nullable()
 });
 
+const TERMINAL_JOBAI_STATUSES = new Set<JobAiInterviewStatus>([
+  "completed",
+  "stopped_during_meeting",
+  "canceled",
+  "meeting_not_started"
+]);
+
 function asyncHandler(
   handler: (req: Request, res: Response) => Promise<void>
 ): (req: Request, res: Response, next: express.NextFunction) => void {
@@ -87,11 +107,51 @@ function parseBody<T>(schema: z.ZodSchema<T>, body: unknown): T {
   return parsed.data;
 }
 
+function readBearerToken(req: Request): string | undefined {
+  const auth = req.header("authorization") ?? req.header("Authorization");
+  if (!auth) {
+    return undefined;
+  }
+  const bearer = /^Bearer\s+(.+)$/i.exec(auth.trim()) ?? /^Bearer:\s*(.+)$/i.exec(auth.trim());
+  return bearer?.[1]?.trim();
+}
+
+function internalMeetingId(meetingId: number): string {
+  return `nullxes-meeting-${meetingId}`;
+}
+
+function isFinishedInterview(stored: StoredInterview): boolean {
+  return (
+    TERMINAL_JOBAI_STATUSES.has(stored.rawPayload.status) ||
+    stored.projection.nullxesStatus === "completed" ||
+    stored.projection.nullxesStatus === "stopped_during_meeting"
+  );
+}
+
+function isFinishedMeeting(meeting: MeetingRecord | undefined): boolean {
+  return meeting?.status === "completed" || meeting?.status === "stopped_during_meeting";
+}
+
+function assertMeetingControlKey(req: Request, stored: StoredInterview): boolean {
+  return readBearerToken(req) === stored.projection.meetingControlKey;
+}
+
+function respondError(res: Response, status: number, errorCode: string): void {
+  res.status(status).json({ errorCode });
+}
+
+function shouldRejectTooEarly(stored: StoredInterview, now = Date.now()): boolean {
+  const meetingAtMs = new Date(stored.projection.meetingAt).getTime();
+  return Number.isFinite(meetingAtMs) && now < meetingAtMs;
+}
+
 export function createMeetingRouter(
   orchestrator: MeetingOrchestrator,
   deps?: {
     recordings?: StreamRecordingService;
     interviews?: InterviewSyncService;
+    runtimeEvents?: RuntimeEventStore;
+    controlWsHub?: MeetingControlWsHub;
   }
 ): express.Router {
   const router = express.Router();
@@ -130,6 +190,86 @@ export function createMeetingRouter(
   );
 
   router.post("/start", asyncHandler(async (req: Request, res: Response) => {
+    if (typeof req.body?.meetingId === "number") {
+      if (!deps?.interviews) {
+        respondError(res, 404, "meeting_not_found");
+        return;
+      }
+      const input = parseBody(controlStartMeetingSchema, req.body);
+      const stored = deps.interviews.getInterviewByNumericMeetingId(input.meetingId);
+      if (!stored) {
+        respondError(res, 404, "meeting_not_found");
+        return;
+      }
+      if (!assertMeetingControlKey(req, stored)) {
+        respondError(res, 401, "wrong_meeting_control_key");
+        return;
+      }
+      if (isFinishedInterview(stored)) {
+        respondError(res, 400, "meeting_already_finished");
+        return;
+      }
+      if (shouldRejectTooEarly(stored)) {
+        respondError(res, 400, "too_early");
+        return;
+      }
+
+      const internalId = internalMeetingId(input.meetingId);
+      const existingMeeting = orchestrator.tryGetMeeting(internalId);
+      if (existingMeeting && !isFinishedMeeting(existingMeeting)) {
+        respondError(res, 400, "meeting_already_started");
+        return;
+      }
+      if (isFinishedMeeting(existingMeeting)) {
+        respondError(res, 400, "meeting_already_finished");
+        return;
+      }
+
+      const metadata = {
+        numericMeetingId: input.meetingId,
+        jobAiId: stored.jobAiId,
+        agentRTMPURL: input.agentRTMPURL,
+        source: "nullxes_control_api",
+        interviewContext: {
+          jobTitle: stored.rawPayload.jobTitle,
+          vacancyText: stored.rawPayload.vacancyText,
+          companyName: stored.rawPayload.companyName,
+          candidateName: `${stored.projection.candidateFirstName} ${stored.projection.candidateLastName}`.trim(),
+          questions: stored.rawPayload.specialty?.questions ?? []
+        }
+      };
+
+      const result = orchestrator.startMeeting({
+        internalMeetingId: internalId,
+        triggerSource: "nullxes_control_api",
+        metadata
+      });
+      deps.interviews.attachSession(stored.jobAiId, {
+        meetingId: internalId,
+        nullxesStatus: "in_meeting"
+      });
+      void deps.interviews.transitionStatus(stored.jobAiId, "in_meeting").catch((error: unknown) => {
+        logger.warn(
+          { jobAiId: stored.jobAiId, meetingId: input.meetingId, error: error instanceof Error ? error.message : String(error) },
+          "control meeting start: failed to transition JobAI status to in_meeting"
+        );
+      });
+      void deps.runtimeEvents?.append({
+        type: "meeting.control.started",
+        meetingId: internalId,
+        jobAiId: stored.jobAiId,
+        actor: "nullxes_control_api",
+        payload: { numericMeetingId: input.meetingId, agentRTMPURL: input.agentRTMPURL }
+      }).catch(() => undefined);
+      res.status(201).json({
+        ok: true,
+        meetingId: input.meetingId,
+        internalMeetingId: internalId,
+        status: result.meeting.status
+      });
+      return;
+    }
+
     const input = parseBody<StartMeetingInput>(startMeetingSchema, req.body);
     const metadata = (input.metadata ?? {}) as Record<string, unknown>;
     const interviewContext = (metadata.interviewContext ?? {}) as Record<string, unknown>;
@@ -152,6 +292,74 @@ export function createMeetingRouter(
 
     const result = orchestrator.startMeeting(input);
     res.status(201).json(result);
+  }));
+
+  router.post("/stop", asyncHandler(async (req: Request, res: Response) => {
+    if (!deps?.interviews) {
+      respondError(res, 404, "meeting_not_found");
+      return;
+    }
+    const input = parseBody(controlStopMeetingSchema, req.body);
+    const stored = deps.interviews.getInterviewByNumericMeetingId(input.meetingId);
+    if (!stored) {
+      respondError(res, 404, "meeting_not_found");
+      return;
+    }
+    if (!assertMeetingControlKey(req, stored)) {
+      respondError(res, 401, "wrong_meeting_control_key");
+      return;
+    }
+    if (isFinishedInterview(stored)) {
+      respondError(res, 400, "meeting_already_finished");
+      return;
+    }
+
+    const internalId = internalMeetingId(input.meetingId);
+    const existingMeeting = orchestrator.tryGetMeeting(internalId);
+    if (!existingMeeting) {
+      respondError(res, 404, "meeting_not_found");
+      return;
+    }
+    if (isFinishedMeeting(existingMeeting)) {
+      respondError(res, 400, "meeting_already_finished");
+      return;
+    }
+
+    const result = orchestrator.stopMeeting(internalId, {
+      reason: "manual_stop",
+      finalStatus: "stopped_during_meeting",
+      metadata: {
+        stopReason: input.stopReason,
+        numericMeetingId: input.meetingId,
+        jobAiId: stored.jobAiId,
+        source: "nullxes_control_api"
+      }
+    });
+    deps.interviews.attachSession(stored.jobAiId, {
+      meetingId: internalId,
+      nullxesStatus: "stopped_during_meeting"
+    });
+    void deps.interviews.transitionStatus(stored.jobAiId, "stopped_during_meeting").catch((error: unknown) => {
+      logger.warn(
+        { jobAiId: stored.jobAiId, meetingId: input.meetingId, stopReason: input.stopReason, error: error instanceof Error ? error.message : String(error) },
+        "control meeting stop: failed to transition JobAI status to stopped_during_meeting"
+      );
+    });
+    void deps.runtimeEvents?.append({
+      type: "meeting.control.stopped",
+      meetingId: internalId,
+      jobAiId: stored.jobAiId,
+      actor: "nullxes_control_api",
+      payload: { numericMeetingId: input.meetingId, stopReason: input.stopReason }
+    }).catch(() => undefined);
+    deps.controlWsHub?.closeMeeting(input.meetingId, "meeting_stopped");
+    res.status(200).json({
+      ok: true,
+      meetingId: input.meetingId,
+      internalMeetingId: internalId,
+      status: result.meeting.status,
+      stopReason: input.stopReason
+    });
   }));
 
   router.post("/:meetingId/stop", asyncHandler(async (req: Request, res: Response) => {
