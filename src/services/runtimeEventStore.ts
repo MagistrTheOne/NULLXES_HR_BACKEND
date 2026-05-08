@@ -39,6 +39,8 @@ export class RuntimeEventStore {
       if (existing) {
         return existing;
       }
+      // Stale index entry (event already trimmed) must not survive.
+      delete state.idempotencyIndex[idemKey];
     }
     const event: RuntimeEvent = {
       id: randomUUID(),
@@ -57,14 +59,11 @@ export class RuntimeEventStore {
     if (state.events.length > max) {
       state.events.splice(0, state.events.length - max);
     }
+    this.pruneIdempotencyIndex(state);
     if (idemKey) {
       state.idempotencyIndex ??= {};
       state.idempotencyIndex[idemKey] = event.id;
-      const entries = Object.entries(state.idempotencyIndex);
-      if (entries.length > 1000) {
-        const trimmed = entries.slice(entries.length - 1000);
-        state.idempotencyIndex = Object.fromEntries(trimmed);
-      }
+      this.pruneIdempotencyIndex(state);
     }
     await this.saveState(key, state);
     return event;
@@ -134,5 +133,20 @@ export class RuntimeEventStore {
 
   private redisKey(key: string): string {
     return `${this.options?.prefix ?? "nullxes:hr-ai"}:runtime:${key}`;
+  }
+
+  private pruneIdempotencyIndex(state: RuntimeState): void {
+    if (!state.idempotencyIndex) {
+      return;
+    }
+    const validEventIds = new Set(state.events.map((event) => event.id));
+    const linkedEntries = Object.entries(state.idempotencyIndex).filter(([, eventId]) => validEventIds.has(eventId));
+    if (linkedEntries.length === 0) {
+      state.idempotencyIndex = undefined;
+      return;
+    }
+    const maxEntries = 1000;
+    const trimmedEntries = linkedEntries.length > maxEntries ? linkedEntries.slice(linkedEntries.length - maxEntries) : linkedEntries;
+    state.idempotencyIndex = Object.fromEntries(trimmedEntries);
   }
 }
