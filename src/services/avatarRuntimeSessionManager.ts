@@ -6,6 +6,8 @@ import { OpenAiRealtimeOrchestrator } from "./openaiOrchestrator";
 import { RunpodWorkerClient } from "./runpodWorkerClient";
 import { StreamAgentPublisher } from "./streamAgentPublisher";
 import type { RuntimeEventStore } from "./runtimeEventStore";
+import { MasterClock } from "./masterClock";
+import { SessionOrchestrator } from "./sessionOrchestrator";
 
 type RuntimeState = "idle" | "starting" | "active" | "degraded" | "paused" | "stopped";
 
@@ -20,6 +22,8 @@ type RuntimeSession = {
   paused: boolean;
   subtitlesSuppressed: boolean;
   seenTranscriptKeys: Set<string>;
+  clock: MasterClock;
+  orchestrator: SessionOrchestrator;
   openai: OpenAiRealtimeOrchestrator;
   runpod: RunpodWorkerClient;
   engine?: AvatarRuntimeEngine;
@@ -54,7 +58,9 @@ export class AvatarRuntimeSessionManager {
     }
 
     const sessionId = input.sessionId ?? input.meetingId;
-    const openai = new OpenAiRealtimeOrchestrator({ runtimeEvents: this.options.runtimeEvents });
+    const clock = new MasterClock();
+    const sessionOrchestrator = new SessionOrchestrator();
+    const openai = new OpenAiRealtimeOrchestrator({ runtimeEvents: this.options.runtimeEvents, clock });
     openai.start(input.meetingId, sessionId);
     const runpod = new RunpodWorkerClient();
     const session: RuntimeSession = {
@@ -68,6 +74,8 @@ export class AvatarRuntimeSessionManager {
       paused: false,
       subtitlesSuppressed: false,
       seenTranscriptKeys: new Set(),
+      clock,
+      orchestrator: sessionOrchestrator,
       openai,
       runpod
     };
@@ -95,6 +103,7 @@ export class AvatarRuntimeSessionManager {
       orchestrator: openai,
       publisher: new StreamAgentPublisher(),
       runpod,
+      clock,
       runtimeEvents: this.options.runtimeEvents
     });
     session.engine = engine;
@@ -133,6 +142,7 @@ export class AvatarRuntimeSessionManager {
     const type = input.type;
 
     if (type === "input_audio_buffer.speech_started" || type === "speech.started") {
+      session.orchestrator.onVadUtterance();
       this.publishActivity(session, "candidate", "speaking");
       return;
     }
@@ -141,10 +151,12 @@ export class AvatarRuntimeSessionManager {
       return;
     }
     if (type === "response.create" || type === "response.created") {
+      session.orchestrator.onAssistantTurnStart("thinking");
       this.publishActivity(session, "ai_agent", session.paused ? "paused" : "thinking");
       return;
     }
     if (type === "response.done") {
+      session.orchestrator.onAssistantTurnEnd();
       this.publishActivity(session, "ai_agent", session.paused ? "paused" : "listening");
       return;
     }
@@ -165,7 +177,7 @@ export class AvatarRuntimeSessionManager {
       this.ingestOpenAiAudioDelta(session.meetingId, {
         pcm16Base64: audioDelta,
         sampleRateHz: 24_000,
-        timestampMs: input.timestampMs ?? Date.now()
+        timestampMs: input.timestampMs ?? session.clock.nowMs()
       });
     }
   }
@@ -176,6 +188,9 @@ export class AvatarRuntimeSessionManager {
   ): void {
     const session = this.resolveSession(meetingId);
     if (!session || session.paused || session.state === "stopped") {
+      return;
+    }
+    if (session.orchestrator.resolveAudioSource() !== "tts") {
       return;
     }
     const pcm16 = Buffer.from(input.pcm16Base64, "base64");
@@ -204,6 +219,7 @@ export class AvatarRuntimeSessionManager {
     session.state = "paused";
     session.seenTranscriptKeys.clear();
     session.engine?.pause(reason);
+    session.orchestrator.onAssistantTurnEnd();
     this.publishActivity(session, "ai_agent", "paused");
     this.touch(session);
   }
@@ -217,6 +233,7 @@ export class AvatarRuntimeSessionManager {
     session.state = session.engine ? "active" : "degraded";
     session.seenTranscriptKeys.clear();
     session.engine?.resume();
+    session.orchestrator.onAssistantTurnEnd();
     this.publishActivity(session, "ai_agent", "listening");
     this.touch(session);
   }
@@ -228,6 +245,7 @@ export class AvatarRuntimeSessionManager {
     session.seenTranscriptKeys.clear();
     session.openai.interrupt(session.meetingId, reason);
     session.engine?.interrupt(reason);
+    session.orchestrator.onAssistantTurnEnd();
     this.publishActivity(session, "ai_agent", session.paused ? "paused" : "listening");
     void this.options.runtimeEvents?.append({
       type: "avatar.runtime.interrupted",
@@ -269,6 +287,48 @@ export class AvatarRuntimeSessionManager {
     if (session?.numericMeetingId) {
       this.options.controlWsHub?.publishCurrentQuestion(session.numericMeetingId, questionIndex);
     }
+  }
+
+  getStats(meetingId: string): Record<string, unknown> | null {
+    const session = this.resolveSession(meetingId);
+    if (!session) return null;
+    return {
+      meetingId: session.meetingId,
+      sessionId: session.sessionId,
+      state: session.state,
+      epoch: session.epoch,
+      paused: session.paused,
+      clockMs: session.clock.nowMs(),
+      orchestrator: session.orchestrator.snapshot(),
+      engine: session.engine?.getStats() ?? null
+    };
+  }
+
+  setDuplexMode(meetingId: string, mode: "single_assistant" | "duplex"): void {
+    const session = this.resolveSession(meetingId);
+    if (!session) return;
+    session.orchestrator.setDuplexMode(mode);
+    this.touch(session);
+  }
+
+  setVideoAudioSource(meetingId: string, source: "mic" | "tts" | "auto"): void {
+    const session = this.resolveSession(meetingId);
+    if (!session) return;
+    session.orchestrator.setVideoAudioSource(source);
+    this.touch(session);
+  }
+
+  setActiveSpeaker(meetingId: string, speaker: "candidate" | "assistant"): void {
+    const session = this.resolveSession(meetingId);
+    if (!session) return;
+    session.orchestrator.forceActiveSpeaker(speaker);
+    if (speaker === "candidate") {
+      this.publishActivity(session, "candidate", "speaking");
+      this.publishActivity(session, "ai_agent", "listening");
+    } else {
+      this.publishActivity(session, "ai_agent", session.paused ? "paused" : "speaking");
+    }
+    this.touch(session);
   }
 
   startSweeper(intervalMs = 30_000): void {

@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import { logger } from "../logging/logger";
 import type { RuntimeEventStore } from "./runtimeEventStore";
+import type { MasterClock } from "./masterClock";
 
 export type OrchestratorSessionState = "starting" | "active" | "failed" | "closed";
 
@@ -31,12 +32,15 @@ export class OpenAiRealtimeOrchestrator {
   private readonly runtimeEvents?: RuntimeEventStore;
   private readonly listeners = new Set<(meetingId: string, sessionId: string, event: OpenAiOrchestratorEvent) => void>();
 
-  constructor(options: { runtimeEvents?: RuntimeEventStore }) {
+  private readonly clock: MasterClock;
+
+  constructor(options: { runtimeEvents?: RuntimeEventStore; clock: MasterClock }) {
     this.runtimeEvents = options.runtimeEvents;
+    this.clock = options.clock;
   }
 
   start(meetingId: string, sessionId: string): void {
-    const now = Date.now();
+    const now = this.clock.nowMs();
     this.sessions.set(meetingId, {
       meetingId,
       sessionId,
@@ -105,7 +109,7 @@ export class OpenAiRealtimeOrchestrator {
     if (!record) return;
     const event: OpenAiOrchestratorEvent = {
       type: "interrupt",
-      payload: { reason, timestampMs: Date.now() }
+      payload: { reason, timestampMs: this.clock.nowMs() }
     };
     for (const l of this.listeners) {
       try {

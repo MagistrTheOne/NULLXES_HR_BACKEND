@@ -6,6 +6,7 @@ import type { RuntimeCommandInput, RuntimeCommandRecord } from "../types/runtime
 import type { RuntimeEventStore } from "../services/runtimeEventStore";
 import type { RuntimeLeaseStore } from "../services/runtimeLeaseStore";
 import type { RuntimeSnapshotService } from "../services/runtimeSnapshotService";
+import type { AvatarRuntimeSessionManager } from "../services/avatarRuntimeSessionManager";
 
 const commandSchema = z.object({
   type: z.enum([
@@ -66,6 +67,7 @@ export function createRuntimeRouter(deps: {
   avatarClient?: import("../services/avatarClient").AvatarClient;
   avatarStateStore?: import("../services/avatarStateStore").AvatarStateStore;
   meetingStore?: import("../services/meetingStore").InMemoryMeetingStore;
+  avatarRuntime?: AvatarRuntimeSessionManager;
 }): express.Router {
   const router = express.Router();
 
@@ -191,6 +193,7 @@ export function createRuntimeRouter(deps: {
         const duplexMode = input.payload?.duplexMode === "duplex" ? "duplex" : "single_assistant";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, duplexMode });
         void deps.avatarClient.postSessionCommand(sessionId, { type: "duplex_mode.set", payload: { duplex_mode: duplexMode } });
+        deps.avatarRuntime?.setDuplexMode(req.params.meetingId, duplexMode);
       }
       if (input.type === "avatar.video_audio_source.set") {
         const src =
@@ -201,11 +204,13 @@ export function createRuntimeRouter(deps: {
               : "tts";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, videoAudioSource: src });
         void deps.avatarClient.postSessionCommand(sessionId, { type: "video_audio_source.set", payload: { video_audio_source: src } });
+        deps.avatarRuntime?.setVideoAudioSource(req.params.meetingId, src);
       }
       if (input.type === "avatar.speaker.set") {
         const sp = input.payload?.activeSpeaker === "candidate" ? "candidate" : "assistant";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, activeSpeaker: sp });
         void deps.avatarClient.postSessionCommand(sessionId, { type: "speaker.set", payload: { active_speaker: sp } });
+        deps.avatarRuntime?.setActiveSpeaker(req.params.meetingId, sp);
       }
     }
     if (input.type === "agent.force_next_question") {
@@ -244,6 +249,11 @@ export function createRuntimeRouter(deps: {
     req.on("close", () => {
       clearInterval(timer);
     });
+  }));
+
+  router.get("/:meetingId/avatar-stats", asyncHandler(async (req, res) => {
+    const stats = deps.avatarRuntime?.getStats(req.params.meetingId) ?? null;
+    res.status(200).json({ stats });
   }));
 
   return router;

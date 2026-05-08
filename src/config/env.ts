@@ -106,7 +106,10 @@ const envSchema = z.object({
   RUNPOD_WORKER_RETURN_FRAMES: z.coerce.boolean().default(true),
   VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
   AVATAR_VIDEO_ENABLED: z.coerce.boolean().default(true),
-  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static")
+  AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
+  AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),
+  AVATAR_AUDIO_CHUNK_MAX_MS: z.coerce.number().int().min(20).max(40).default(40),
+  AVATAR_AUDIO_QUEUE_BUDGET_MS: z.coerce.number().int().min(80).max(2_000).default(200)
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {

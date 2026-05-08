@@ -323,7 +323,8 @@ export async function createApp(): Promise<AppContext> {
       meetingOrchestrator,
       avatarClient,
       avatarStateStore,
-      meetingStore
+      meetingStore,
+      avatarRuntime: avatarRuntimeSessionManager
     })
   );
 

@@ -11,6 +11,7 @@ export type AudioChunk = {
 export class AudioRingBuffer {
   private readonly maxMs: number;
   private chunks: AudioChunk[] = [];
+  private droppedSamples = 0;
 
   constructor(options: { maxMs: number }) {
     this.maxMs = options.maxMs;
@@ -77,6 +78,29 @@ export class AudioRingBuffer {
     this.chunks = [];
   }
 
+  getBufferedMs(): number {
+    const oldest = this.oldestMs();
+    const newest = this.newestMs();
+    if (oldest === null || newest === null) return 0;
+    return Math.max(0, newest - oldest);
+  }
+
+  dropOldestMs(ms: number): number {
+    if (ms <= 0) return 0;
+    let removedMs = 0;
+    while (this.chunks.length > 0 && removedMs < ms) {
+      const first = this.chunks.shift()!;
+      const durMs = (first.pcm16.length / first.sampleRateHz) * 1000;
+      removedMs += durMs;
+      this.droppedSamples += first.pcm16.length;
+    }
+    return removedMs;
+  }
+
+  getDroppedSamples(): number {
+    return this.droppedSamples;
+  }
+
   private trim(): void {
     // Keep only last maxMs of audio based on newestMs.
     const newest = this.newestMs();
@@ -90,4 +114,7 @@ export class AudioRingBuffer {
     }
   }
 }
+
+export class MicRingBuffer extends AudioRingBuffer {}
+export class TtsRingBuffer extends AudioRingBuffer {}
 
