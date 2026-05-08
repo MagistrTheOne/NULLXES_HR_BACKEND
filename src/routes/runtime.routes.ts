@@ -7,6 +7,7 @@ import type { RuntimeEventStore } from "../services/runtimeEventStore";
 import type { RuntimeLeaseStore } from "../services/runtimeLeaseStore";
 import type { RuntimeSnapshotService } from "../services/runtimeSnapshotService";
 import type { AvatarRuntimeSessionManager } from "../services/avatarRuntimeSessionManager";
+import type { RuntimeSessionStateStore } from "../services/runtimeSessionStateStore";
 
 const commandSchema = z.object({
   type: z.enum([
@@ -68,6 +69,7 @@ export function createRuntimeRouter(deps: {
   avatarStateStore?: import("../services/avatarStateStore").AvatarStateStore;
   meetingStore?: import("../services/meetingStore").InMemoryMeetingStore;
   avatarRuntime?: AvatarRuntimeSessionManager;
+  sessionState?: RuntimeSessionStateStore;
 }): express.Router {
   const router = express.Router();
 
@@ -192,7 +194,12 @@ export function createRuntimeRouter(deps: {
       if (input.type === "avatar.duplex_mode.set") {
         const duplexMode = input.payload?.duplexMode === "duplex" ? "duplex" : "single_assistant";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, duplexMode });
-        void deps.avatarClient.postSessionCommand(sessionId, { type: "duplex_mode.set", payload: { duplex_mode: duplexMode } });
+        await deps.avatarRuntime?.syncPodCommandWithRetry({
+          meetingId: req.params.meetingId,
+          commandType: "duplex_mode.set",
+          idempotencyKey: `podsync:${owner}:duplex`,
+          fn: () => deps.avatarClient!.postSessionCommand(sessionId, { type: "duplex_mode.set", payload: { duplex_mode: duplexMode } })
+        });
         deps.avatarRuntime?.setDuplexMode(req.params.meetingId, duplexMode);
       }
       if (input.type === "avatar.video_audio_source.set") {
@@ -203,13 +210,24 @@ export function createRuntimeRouter(deps: {
               ? "auto"
               : "tts";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, videoAudioSource: src });
-        void deps.avatarClient.postSessionCommand(sessionId, { type: "video_audio_source.set", payload: { video_audio_source: src } });
+        await deps.avatarRuntime?.syncPodCommandWithRetry({
+          meetingId: req.params.meetingId,
+          commandType: "video_audio_source.set",
+          idempotencyKey: `podsync:${owner}:video_audio_source`,
+          fn: () =>
+            deps.avatarClient!.postSessionCommand(sessionId, { type: "video_audio_source.set", payload: { video_audio_source: src } })
+        });
         deps.avatarRuntime?.setVideoAudioSource(req.params.meetingId, src);
       }
       if (input.type === "avatar.speaker.set") {
         const sp = input.payload?.activeSpeaker === "candidate" ? "candidate" : "assistant";
         deps.avatarStateStore.patch(req.params.meetingId, { sessionId, activeSpeaker: sp });
-        void deps.avatarClient.postSessionCommand(sessionId, { type: "speaker.set", payload: { active_speaker: sp } });
+        await deps.avatarRuntime?.syncPodCommandWithRetry({
+          meetingId: req.params.meetingId,
+          commandType: "speaker.set",
+          idempotencyKey: `podsync:${owner}:speaker`,
+          fn: () => deps.avatarClient!.postSessionCommand(sessionId, { type: "speaker.set", payload: { active_speaker: sp } })
+        });
         deps.avatarRuntime?.setActiveSpeaker(req.params.meetingId, sp);
       }
     }
@@ -254,6 +272,16 @@ export function createRuntimeRouter(deps: {
   router.get("/:meetingId/avatar-stats", asyncHandler(async (req, res) => {
     const stats = deps.avatarRuntime?.getStats(req.params.meetingId) ?? null;
     res.status(200).json({ stats });
+  }));
+
+  router.get("/:meetingId/state", asyncHandler(async (req, res) => {
+    const state = await deps.sessionState?.get(req.params.meetingId);
+    res.status(200).json({ state: state ?? null });
+  }));
+
+  router.post("/:meetingId/pod-heartbeat", asyncHandler(async (req, res) => {
+    await deps.avatarRuntime?.markPodHeartbeat(req.params.meetingId);
+    res.status(202).json({ ok: true });
   }));
 
   return router;

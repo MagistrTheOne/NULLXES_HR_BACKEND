@@ -5,6 +5,7 @@ import type { AvatarStateStore } from "./avatarStateStore";
 import type { InMemoryInterviewStore } from "./interviewStore";
 import type { InMemoryMeetingStore } from "./meetingStore";
 import type { RuntimeEventStore } from "./runtimeEventStore";
+import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
 import type { InMemorySessionStore } from "./sessionStore";
 
 const ACTIVE_MEETING_STATUSES = new Set(["starting", "in_meeting"]);
@@ -17,6 +18,7 @@ export class RuntimeSnapshotService {
       interviewStore: InMemoryInterviewStore;
       avatarStateStore: AvatarStateStore;
       runtimeEvents: RuntimeEventStore;
+      sessionStateStore?: RuntimeSessionStateStore;
       streamCallType: string;
     }
   ) {}
@@ -38,6 +40,7 @@ export class RuntimeSnapshotService {
     const revision = await this.deps.runtimeEvents.getRevision(meetingId);
     const lastCommand = await this.deps.runtimeEvents.getLastCommand(meetingId);
     const warnings: string[] = [];
+    const canonicalState = await this.deps.sessionStateStore?.get(meetingId);
 
     if (!session && meeting.sessionId) {
       warnings.push("session_missing");
@@ -47,6 +50,9 @@ export class RuntimeSnapshotService {
     }
     if (!admission?.owner && ACTIVE_MEETING_STATUSES.has(meeting.status)) {
       warnings.push("candidate_not_admitted");
+    }
+    if (!canonicalState) {
+      warnings.push("canonical_session_state_missing");
     }
 
     return {
@@ -82,8 +88,19 @@ export class RuntimeSnapshotService {
         lastCommand,
         agentPaused: lastCommand?.type === "agent.pause"
       },
+      canonicalState: canonicalState
+        ? {
+            activeSpeaker: canonicalState.activeSpeaker,
+            phase: canonicalState.phase,
+            engine: canonicalState.engine,
+            degradationLevel: canonicalState.degradationLevel,
+            avatarReady: canonicalState.avatarReady,
+            revision: canonicalState.revision,
+            updatedAtMs: canonicalState.updatedAtMs
+          }
+        : undefined,
       health: {
-        ready: ACTIVE_MEETING_STATUSES.has(meeting.status) && Boolean(session),
+        ready: ACTIVE_MEETING_STATUSES.has(meeting.status) && Boolean(session) && Boolean(canonicalState),
         warnings
       }
     };

@@ -48,6 +48,7 @@ import { PostMeetingProcessor } from "./services/postMeetingProcessor";
 import { RuntimeEventStore } from "./services/runtimeEventStore";
 import { RuntimeLeaseStore } from "./services/runtimeLeaseStore";
 import { RuntimeSnapshotService } from "./services/runtimeSnapshotService";
+import { RuntimeSessionStateStore } from "./services/runtimeSessionStateStore";
 import { createStorageBackends, type StorageBackends } from "./services/storageFactory";
 import type { InMemorySessionStore } from "./services/sessionStore";
 import { WebhookDispatcher } from "./services/webhookDispatcher";
@@ -88,9 +89,15 @@ export async function createApp(): Promise<AppContext> {
     prefix: env.REDIS_PREFIX
   });
   const meetingControlWsHub = new MeetingControlWsHub(interviewService, runtimeEvents);
+  const runtimeSessionState = new RuntimeSessionStateStore({
+    redis: storage.redis,
+    prefix: env.REDIS_PREFIX,
+    ttlMs: env.REDIS_SESSION_TTL_MS
+  });
   const avatarRuntimeSessionManager = new AvatarRuntimeSessionManager({
     runtimeEvents,
-    controlWsHub: meetingControlWsHub
+    controlWsHub: meetingControlWsHub,
+    sessionState: runtimeSessionState
   });
   meetingControlWsHub.setPauseChangeHandler(({ internalMeetingId, pauseEnabled }) => {
     if (pauseEnabled) {
@@ -150,6 +157,7 @@ export async function createApp(): Promise<AppContext> {
     interviewStore,
     avatarStateStore,
     runtimeEvents,
+    sessionStateStore: runtimeSessionState,
     streamCallType: env.STREAM_CALL_TYPE
   });
 
@@ -324,7 +332,8 @@ export async function createApp(): Promise<AppContext> {
       avatarClient,
       avatarStateStore,
       meetingStore,
-      avatarRuntime: avatarRuntimeSessionManager
+      avatarRuntime: avatarRuntimeSessionManager,
+      sessionState: runtimeSessionState
     })
   );
 

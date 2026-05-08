@@ -8,6 +8,8 @@ import { StreamAgentPublisher } from "./streamAgentPublisher";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { MasterClock } from "./masterClock";
 import { SessionOrchestrator } from "./sessionOrchestrator";
+import { withRetries } from "./retry";
+import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
 
 type RuntimeState = "idle" | "starting" | "active" | "degraded" | "paused" | "stopped";
 
@@ -48,6 +50,7 @@ export class AvatarRuntimeSessionManager {
       runtimeEvents?: RuntimeEventStore;
       controlWsHub?: MeetingControlWsHub;
       inactiveTtlMs?: number;
+      sessionState?: RuntimeSessionStateStore;
     }
   ) {}
 
@@ -80,6 +83,13 @@ export class AvatarRuntimeSessionManager {
       runpod
     };
     this.sessions.set(input.meetingId, session);
+    await this.options.sessionState?.upsert(input.meetingId, {
+      activeSpeaker: "assistant",
+      phase: "starting",
+      engine: "echomimic",
+      degradationLevel: 0,
+      avatarReady: false
+    });
     if (typeof input.numericMeetingId === "number") {
       this.numericToInternal.set(input.numericMeetingId, input.meetingId);
     }
@@ -88,12 +98,24 @@ export class AvatarRuntimeSessionManager {
     if (!readiness.ok) {
       session.state = "degraded";
       this.touch(session);
+      await this.options.sessionState?.upsert(input.meetingId, {
+        phase: "degraded",
+        degradationLevel: 2,
+        avatarReady: false
+      });
       await this.options.runtimeEvents?.append({
         type: "avatar.runtime.degraded",
         meetingId: input.meetingId,
         sessionId,
         actor: "gateway",
         payload: { reason: readiness.reason, detail: readiness.detail }
+      }).catch(() => undefined);
+      await this.options.runtimeEvents?.append({
+        type: "engine_degraded",
+        meetingId: input.meetingId,
+        sessionId,
+        actor: "gateway",
+        payload: { degradationLevel: 2, reason: readiness.reason, detail: readiness.detail }
       }).catch(() => undefined);
       logger.warn({ meetingId: input.meetingId, reason: readiness.reason, detail: readiness.detail }, "avatar runtime degraded before start");
       return;
@@ -111,6 +133,12 @@ export class AvatarRuntimeSessionManager {
       await engine.start({ meetingId: input.meetingId, sessionId, openAiAudioRateHz: 24_000 });
       session.state = "active";
       this.touch(session);
+      await this.options.sessionState?.upsert(input.meetingId, {
+        phase: "in_meeting",
+        engine: "echomimic",
+        degradationLevel: 0,
+        avatarReady: true
+      });
       await this.options.runtimeEvents?.append({
         type: "avatar.runtime.started",
         meetingId: input.meetingId,
@@ -122,12 +150,24 @@ export class AvatarRuntimeSessionManager {
       session.state = "degraded";
       session.engine = undefined;
       this.touch(session);
+      await this.options.sessionState?.upsert(input.meetingId, {
+        phase: "degraded",
+        degradationLevel: 2,
+        avatarReady: false
+      });
       await this.options.runtimeEvents?.append({
         type: "avatar.runtime.degraded",
         meetingId: input.meetingId,
         sessionId,
         actor: "gateway",
         payload: { reason: "engine_start_failed", error: error instanceof Error ? error.message : String(error) }
+      }).catch(() => undefined);
+      await this.options.runtimeEvents?.append({
+        type: "engine_degraded",
+        meetingId: input.meetingId,
+        sessionId,
+        actor: "gateway",
+        payload: { degradationLevel: 2, reason: "engine_start_failed" }
       }).catch(() => undefined);
       logger.warn({ meetingId: input.meetingId, err: error }, "avatar runtime engine start failed");
     }
@@ -143,6 +183,15 @@ export class AvatarRuntimeSessionManager {
 
     if (type === "input_audio_buffer.speech_started" || type === "speech.started") {
       session.orchestrator.onVadUtterance();
+      void this.options.sessionState?.upsert(session.meetingId, { activeSpeaker: "candidate" });
+      void this.options.runtimeEvents?.append({
+        type: "speaker_changed",
+        meetingId: session.meetingId,
+        sessionId: session.sessionId,
+        actor: "gateway",
+        payload: { activeSpeaker: "candidate" },
+        idempotencyKey: `speaker:${session.meetingId}:candidate:${session.epoch}`
+      }).catch(() => undefined);
       this.publishActivity(session, "candidate", "speaking");
       return;
     }
@@ -152,6 +201,15 @@ export class AvatarRuntimeSessionManager {
     }
     if (type === "response.create" || type === "response.created") {
       session.orchestrator.onAssistantTurnStart("thinking");
+      void this.options.sessionState?.upsert(session.meetingId, { activeSpeaker: "assistant", phase: "in_meeting" });
+      void this.options.runtimeEvents?.append({
+        type: "speaker_changed",
+        meetingId: session.meetingId,
+        sessionId: session.sessionId,
+        actor: "gateway",
+        payload: { activeSpeaker: "assistant" },
+        idempotencyKey: `speaker:${session.meetingId}:assistant:${session.epoch}`
+      }).catch(() => undefined);
       this.publishActivity(session, "ai_agent", session.paused ? "paused" : "thinking");
       return;
     }
@@ -218,6 +276,7 @@ export class AvatarRuntimeSessionManager {
     session.epoch += 1;
     session.state = "paused";
     session.seenTranscriptKeys.clear();
+    void this.options.sessionState?.upsert(session.meetingId, { phase: "paused" }).catch(() => undefined);
     session.engine?.pause(reason);
     session.orchestrator.onAssistantTurnEnd();
     this.publishActivity(session, "ai_agent", "paused");
@@ -232,6 +291,9 @@ export class AvatarRuntimeSessionManager {
     session.epoch += 1;
     session.state = session.engine ? "active" : "degraded";
     session.seenTranscriptKeys.clear();
+    void this.options.sessionState?.upsert(session.meetingId, {
+      phase: session.engine ? "in_meeting" : "degraded"
+    }).catch(() => undefined);
     session.engine?.resume();
     session.orchestrator.onAssistantTurnEnd();
     this.publishActivity(session, "ai_agent", "listening");
@@ -246,6 +308,7 @@ export class AvatarRuntimeSessionManager {
     session.openai.interrupt(session.meetingId, reason);
     session.engine?.interrupt(reason);
     session.orchestrator.onAssistantTurnEnd();
+    void this.options.sessionState?.upsert(session.meetingId, { phase: session.paused ? "paused" : "in_meeting" }).catch(() => undefined);
     this.publishActivity(session, "ai_agent", session.paused ? "paused" : "listening");
     void this.options.runtimeEvents?.append({
       type: "avatar.runtime.interrupted",
@@ -265,6 +328,11 @@ export class AvatarRuntimeSessionManager {
     session.subtitlesSuppressed = true;
     session.epoch += 1;
     session.seenTranscriptKeys.clear();
+    void this.options.sessionState?.upsert(session.meetingId, {
+      phase: "stopped",
+      avatarReady: false,
+      degradationLevel: session.engine ? 0 : 2
+    }).catch(() => undefined);
     session.engine?.stop();
     session.openai.close(session.meetingId);
     if (typeof session.numericMeetingId === "number") {
@@ -328,7 +396,60 @@ export class AvatarRuntimeSessionManager {
     } else {
       this.publishActivity(session, "ai_agent", session.paused ? "paused" : "speaking");
     }
+    void this.options.sessionState?.upsert(session.meetingId, { activeSpeaker: speaker }).catch(() => undefined);
+    void this.options.runtimeEvents?.append({
+      type: "speaker_changed",
+      meetingId: session.meetingId,
+      sessionId: session.sessionId,
+      actor: "runtime.command",
+      payload: { activeSpeaker: speaker },
+      idempotencyKey: `speaker:set:${session.meetingId}:${speaker}:${session.epoch}`
+    }).catch(() => undefined);
     this.touch(session);
+  }
+
+  async markPodHeartbeat(meetingId: string): Promise<void> {
+    const current = await this.options.sessionState?.markPodHeartbeat(meetingId);
+    if (!current) return;
+    const driftMs = current.ownership.gatewayUpdatedAtMs - (current.ownership.podUpdatedAtMs ?? current.updatedAtMs);
+    if (Math.abs(driftMs) > 10_000) {
+      await this.options.runtimeEvents?.append({
+        type: "runtime.state.drift_detected",
+        meetingId,
+        actor: "gateway",
+        payload: { driftMs, revision: current.revision }
+      }).catch(() => undefined);
+    }
+  }
+
+  async syncPodCommandWithRetry(input: {
+    fn: () => Promise<void>;
+    meetingId: string;
+    commandType: string;
+    idempotencyKey: string;
+  }): Promise<void> {
+    try {
+      await withRetries(input.fn, { attempts: 3, backoffMs: [200, 600, 1500] });
+      await this.options.runtimeEvents?.append({
+        type: "runtime.state.synced",
+        meetingId: input.meetingId,
+        actor: "gateway",
+        payload: { commandType: input.commandType },
+        idempotencyKey: input.idempotencyKey
+      });
+    } catch (error) {
+      await this.options.runtimeEvents?.append({
+        type: "session_failed",
+        meetingId: input.meetingId,
+        actor: "gateway",
+        payload: {
+          reason: "pod_sync_failed",
+          commandType: input.commandType,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        idempotencyKey: `${input.idempotencyKey}:failed`
+      }).catch(() => undefined);
+    }
   }
 
   startSweeper(intervalMs = 30_000): void {

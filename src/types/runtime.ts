@@ -20,6 +20,12 @@ export type RuntimeEventType =
   | "avatar.runtime.stopped"
   | "avatar.runtime.degraded"
   | "avatar.runtime.interrupted"
+  | "speaker_changed"
+  | "engine_degraded"
+  | "av_sync_warning"
+  | "session_failed"
+  | "runtime.state.synced"
+  | "runtime.state.drift_detected"
   | "candidate.admission.acquire"
   | "candidate.admission.release"
   | "candidate.admission.decision"
@@ -111,6 +117,15 @@ export interface RuntimeSnapshot {
   controls: {
     lastCommand?: RuntimeCommandRecord;
     agentPaused: boolean;
+  };
+  canonicalState?: {
+    activeSpeaker: "candidate" | "assistant";
+    phase: string;
+    engine: string;
+    degradationLevel: number;
+    avatarReady: boolean;
+    revision: number;
+    updatedAtMs: number;
   };
   health: {
     ready: boolean;

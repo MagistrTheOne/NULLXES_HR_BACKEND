@@ -332,6 +332,17 @@ export class AvatarRuntimeEngine {
             bufferedSeconds: this.clipBuffer.getBufferedSeconds(this.clock.nowMs())
           }
         }).catch(() => undefined);
+        void this.runtimeEvents?.append({
+          type: "engine_degraded",
+          meetingId: this.meetingId,
+          sessionId: this.sessionId,
+          actor: "gateway",
+          payload: {
+            degradationLevel: 2,
+            reason: result.reason,
+            workerStatus: result.workerStatus
+          }
+        }).catch(() => undefined);
         return;
       }
 
@@ -413,6 +424,15 @@ export class AvatarRuntimeEngine {
         chunkSizeMs: this.lastChunkSizeMs
       }
     }).catch(() => undefined);
+    if (Math.abs(audioClockDriftMs) > 80) {
+      void this.runtimeEvents?.append({
+        type: "av_sync_warning",
+        meetingId: this.meetingId,
+        sessionId: this.sessionId,
+        actor: "gateway",
+        payload: { driftMs: audioClockDriftMs }
+      }).catch(() => undefined);
+    }
   }
 
   private idleFallbackFrame(frame: Buffer, width: number, height: number): Buffer {

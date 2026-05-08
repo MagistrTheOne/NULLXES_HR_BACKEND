@@ -9,12 +9,14 @@ export interface RuntimeEventAppendInput {
   jobAiId?: number;
   actor?: string;
   payload?: Record<string, unknown>;
+  idempotencyKey?: string;
 }
 
 type RuntimeState = {
   revision: number;
   events: RuntimeEvent[];
   lastCommand?: RuntimeCommandRecord;
+  idempotencyIndex?: Record<string, string>;
 };
 
 export class RuntimeEventStore {
@@ -31,6 +33,13 @@ export class RuntimeEventStore {
   async append(input: RuntimeEventAppendInput): Promise<RuntimeEvent> {
     const key = this.resolveRuntimeKey(input);
     const state = await this.loadState(key);
+    const idemKey = input.idempotencyKey?.trim();
+    if (idemKey && state.idempotencyIndex?.[idemKey]) {
+      const existing = state.events.find((event) => event.id === state.idempotencyIndex?.[idemKey]);
+      if (existing) {
+        return existing;
+      }
+    }
     const event: RuntimeEvent = {
       id: randomUUID(),
       type: input.type,
@@ -47,6 +56,15 @@ export class RuntimeEventStore {
     const max = this.options?.maxEventsPerRuntime ?? 500;
     if (state.events.length > max) {
       state.events.splice(0, state.events.length - max);
+    }
+    if (idemKey) {
+      state.idempotencyIndex ??= {};
+      state.idempotencyIndex[idemKey] = event.id;
+      const entries = Object.entries(state.idempotencyIndex);
+      if (entries.length > 1000) {
+        const trimmed = entries.slice(entries.length - 1000);
+        state.idempotencyIndex = Object.fromEntries(trimmed);
+      }
     }
     await this.saveState(key, state);
     return event;
