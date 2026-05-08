@@ -418,7 +418,7 @@ export class AvatarRuntimeEngine {
   private idleFallbackFrame(frame: Buffer, width: number, height: number): Buffer {
     const out = Buffer.from(frame);
     const ySize = width * height;
-    const pulse = Math.round(Math.sin(Date.now() / 450) * 4);
+    const pulse = Math.round(Math.sin(this.clock.nowMs() / 450) * 4);
     for (let i = 0; i < ySize; i += 4) {
       out[i] = Math.max(0, Math.min(255, out[i] + pulse));
     }
@@ -474,16 +474,18 @@ export class AvatarRuntimeEngine {
     }
     this.chunkViolationCount += 1;
     const out: Array<{ pcm16: Buffer; samples: Int16Array; startMs: number }> = [];
-    for (let offset = 0, index = 0; offset < pcm16.length; offset += chunkBytes, index += 1) {
+    let consumedSamples = 0;
+    for (let offset = 0; offset < pcm16.length; offset += chunkBytes) {
       const end = Math.min(pcm16.length, offset + chunkBytes);
       const sub = pcm16.subarray(offset, end);
-      const startMs = timestampMs + index * targetMs;
+      const startMs = timestampMs + (consumedSamples * 1000) / sampleRateHz;
       this.lastChunkSizeMs = Math.floor((sub.length / bytesPerMs) * 100) / 100;
       out.push({
         pcm16: sub,
         samples: new Int16Array(sub.buffer.slice(sub.byteOffset, sub.byteOffset + sub.byteLength)),
         startMs
       });
+      consumedSamples += Math.floor(sub.length / 2);
     }
     return out;
   }
