@@ -26,6 +26,10 @@ export type RuntimeEventType =
   | "session_failed"
   | "runtime.state.synced"
   | "runtime.state.drift_detected"
+  | "a2f.frame.generated"
+  | "a2em.frame.generated"
+  | "runtime.latency.warn"
+  | "runtime.queue.backpressure"
   | "candidate.admission.acquire"
   | "candidate.admission.release"
   | "candidate.admission.decision"
@@ -117,6 +121,15 @@ export interface RuntimeSnapshot {
   controls: {
     lastCommand?: RuntimeCommandRecord;
     agentPaused: boolean;
+  };
+  a2fRuntime?: {
+    fps: number;
+    queueDepthMs: number;
+    avgLatencyMs: number;
+    p95LatencyMs: number;
+    droppedFrames: number;
+    outputQueueDepth: number;
+    gpuSlot: number | null;
   };
   canonicalState?: {
     activeSpeaker: "candidate" | "assistant";

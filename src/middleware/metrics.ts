@@ -15,6 +15,12 @@ interface MetricsDeps {
   sessionStore: InMemorySessionStore;
   webhookOutbox: WebhookOutbox;
   redisReconnects: () => number;
+  a2fRuntimeStats?: () => Array<{
+    fps: number;
+    queueDepthMs: number;
+    avgLatencyMs: number;
+    p95LatencyMs: number;
+  }>;
 }
 
 export function createMetricsContext(deps: MetricsDeps): MetricsContext {
@@ -70,6 +76,48 @@ export function createMetricsContext(deps: MetricsDeps): MetricsContext {
     registers: [registry]
   });
 
+  const a2fRuntimeFps = new Gauge({
+    name: "gateway_a2f_runtime_fps",
+    help: "Average A2F runtime FPS across active sessions",
+    registers: [registry],
+    collect() {
+      const rows = deps.a2fRuntimeStats?.() ?? [];
+      if (rows.length === 0) {
+        this.set(0);
+        return;
+      }
+      this.set(rows.reduce((acc, row) => acc + row.fps, 0) / rows.length);
+    }
+  });
+
+  const a2fRuntimeQueueDepthMs = new Gauge({
+    name: "gateway_a2f_runtime_queue_depth_ms",
+    help: "Average A2F runtime audio queue depth in milliseconds",
+    registers: [registry],
+    collect() {
+      const rows = deps.a2fRuntimeStats?.() ?? [];
+      if (rows.length === 0) {
+        this.set(0);
+        return;
+      }
+      this.set(rows.reduce((acc, row) => acc + row.queueDepthMs, 0) / rows.length);
+    }
+  });
+
+  const a2fRuntimeLatencyP95Ms = new Gauge({
+    name: "gateway_a2f_runtime_latency_p95_ms",
+    help: "Average A2F runtime p95 latency in milliseconds",
+    registers: [registry],
+    collect() {
+      const rows = deps.a2fRuntimeStats?.() ?? [];
+      if (rows.length === 0) {
+        this.set(0);
+        return;
+      }
+      this.set(rows.reduce((acc, row) => acc + row.p95LatencyMs, 0) / rows.length);
+    }
+  });
+
   // Bridge poll: каждые 10s synchronize external counter с prom-counter.
   let lastReported = 0;
   setInterval(() => {
@@ -83,6 +131,9 @@ export function createMetricsContext(deps: MetricsDeps): MetricsContext {
   void realtimeSessionsActive;
   void webhookOutboxPending;
   void webhookOutboxFailed;
+  void a2fRuntimeFps;
+  void a2fRuntimeQueueDepthMs;
+  void a2fRuntimeLatencyP95Ms;
 
   const middleware = (req: Request, res: Response, next: NextFunction): void => {
     const startNs = process.hrtime.bigint();

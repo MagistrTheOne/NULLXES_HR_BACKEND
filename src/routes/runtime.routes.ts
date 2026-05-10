@@ -8,6 +8,7 @@ import type { RuntimeLeaseStore } from "../services/runtimeLeaseStore";
 import type { RuntimeSnapshotService } from "../services/runtimeSnapshotService";
 import type { AvatarRuntimeSessionManager } from "../services/avatarRuntimeSessionManager";
 import type { RuntimeSessionStateStore } from "../services/runtimeSessionStateStore";
+import type { A2FRuntimeClient } from "../services/a2f-runtime/runtimeServiceClient";
 
 const commandSchema = z.object({
   type: z.enum([
@@ -70,6 +71,7 @@ export function createRuntimeRouter(deps: {
   meetingStore?: import("../services/meetingStore").InMemoryMeetingStore;
   avatarRuntime?: AvatarRuntimeSessionManager;
   sessionState?: RuntimeSessionStateStore;
+  a2fRuntime?: A2FRuntimeClient;
 }): express.Router {
   const router = express.Router();
 
@@ -272,6 +274,16 @@ export function createRuntimeRouter(deps: {
   router.get("/:meetingId/avatar-stats", asyncHandler(async (req, res) => {
     const stats = deps.avatarRuntime?.getStats(req.params.meetingId) ?? null;
     res.status(200).json({ stats });
+  }));
+
+  router.get("/:meetingId/facial-stats", asyncHandler(async (req, res) => {
+    const stats = deps.a2fRuntime?.getStats(req.params.meetingId) ?? null;
+    res.status(200).json({ stats });
+  }));
+
+  router.get("/a2f/sessions", asyncHandler(async (_req, res) => {
+    const sessions = deps.a2fRuntime?.listStats() ?? [];
+    res.status(200).json({ sessions });
   }));
 
   router.get("/:meetingId/state", asyncHandler(async (req, res) => {

@@ -10,6 +10,7 @@ import { MasterClock } from "./masterClock";
 import { SessionOrchestrator } from "./sessionOrchestrator";
 import { withRetries } from "./retry";
 import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
+import type { A2FRuntimeClient } from "./a2f-runtime/runtimeServiceClient";
 
 type RuntimeState = "idle" | "starting" | "active" | "degraded" | "paused" | "stopped";
 
@@ -51,6 +52,7 @@ export class AvatarRuntimeSessionManager {
       controlWsHub?: MeetingControlWsHub;
       inactiveTtlMs?: number;
       sessionState?: RuntimeSessionStateStore;
+      a2fRuntime?: A2FRuntimeClient;
     }
   ) {}
 
@@ -83,6 +85,15 @@ export class AvatarRuntimeSessionManager {
       runpod
     };
     this.sessions.set(input.meetingId, session);
+    if (env.A2F_RUNTIME_ENABLED) {
+      this.options.a2fRuntime?.startSession({
+        meetingId: input.meetingId,
+        targetFps: env.A2F_RUNTIME_TARGET_FPS,
+        windowMs: env.A2F_RUNTIME_WINDOW_MS,
+        hopMs: env.A2F_RUNTIME_HOP_MS,
+        maxQueueMs: env.A2F_RUNTIME_MAX_QUEUE_MS
+      });
+    }
     await this.options.sessionState?.upsert(input.meetingId, {
       activeSpeaker: "assistant",
       phase: "starting",
@@ -260,6 +271,14 @@ export class AvatarRuntimeSessionManager {
       sampleRateHz: input.sampleRateHz,
       timestampMs: input.timestampMs
     });
+    const pcm16Samples = new Int16Array(pcm16.buffer, pcm16.byteOffset, Math.floor(pcm16.byteLength / 2));
+    void this.options.a2fRuntime?.ingestChunk(session.meetingId, {
+      timestampMs: input.timestampMs,
+      sampleRateHz: 16_000,
+      pcm16: input.sampleRateHz === 16_000
+        ? pcm16Samples
+        : this.downsampleTo16k(pcm16Samples, input.sampleRateHz)
+    });
     session.engine?.ingestOpenAiTtsPcm16({
       pcm16,
       sampleRateHz: input.sampleRateHz,
@@ -335,6 +354,9 @@ export class AvatarRuntimeSessionManager {
     }).catch(() => undefined);
     session.engine?.stop();
     session.openai.close(session.meetingId);
+    if (env.A2F_RUNTIME_ENABLED) {
+      this.options.a2fRuntime?.stopSession(session.meetingId);
+    }
     if (typeof session.numericMeetingId === "number") {
       this.options.controlWsHub?.publishCurrentQuestion(session.numericMeetingId, null);
       this.options.controlWsHub?.publishActivityMode(session.numericMeetingId, "ai_agent", "paused");
@@ -368,7 +390,8 @@ export class AvatarRuntimeSessionManager {
       paused: session.paused,
       clockMs: session.clock.nowMs(),
       orchestrator: session.orchestrator.snapshot(),
-      engine: session.engine?.getStats() ?? null
+      engine: session.engine?.getStats() ?? null,
+      a2f: this.options.a2fRuntime?.getStats(session.meetingId) ?? null
     };
   }
 
@@ -567,5 +590,18 @@ export class AvatarRuntimeSessionManager {
 
   private touch(session: RuntimeSession): void {
     session.updatedAtMs = Date.now();
+  }
+
+  private downsampleTo16k(samples: Int16Array, srcRateHz: number): Int16Array {
+    if (srcRateHz <= 16_000) {
+      return samples;
+    }
+    const ratio = srcRateHz / 16_000;
+    const outLength = Math.max(1, Math.floor(samples.length / ratio));
+    const out = new Int16Array(outLength);
+    for (let i = 0; i < outLength; i += 1) {
+      out[i] = samples[Math.floor(i * ratio)] ?? 0;
+    }
+    return out;
   }
 }

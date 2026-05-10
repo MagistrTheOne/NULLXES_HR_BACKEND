@@ -3,7 +3,8 @@ import { logger } from "./logging/logger";
 import { createApp } from "./app";
 
 async function main(): Promise<void> {
-  const { app, sessionStore, webhookDispatcher, postMeetingProcessor, meetingControlWsHub, storage } = await createApp();
+  const { app, sessionStore, webhookDispatcher, postMeetingProcessor, meetingControlWsHub, a2fFrameWsHub, storage } =
+    await createApp();
   sessionStore.startSweeper();
   webhookDispatcher.start();
   postMeetingProcessor.start();
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
     );
   });
   meetingControlWsHub.attach(server);
+  a2fFrameWsHub.attach(server);
 
   const shutdown = (signal: string): void => {
     logger.info({ signal }, "graceful shutdown started");

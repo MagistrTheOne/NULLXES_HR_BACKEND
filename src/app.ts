@@ -53,6 +53,9 @@ import { createStorageBackends, type StorageBackends } from "./services/storageF
 import type { InMemorySessionStore } from "./services/sessionStore";
 import { WebhookDispatcher } from "./services/webhookDispatcher";
 import { WebhookOutbox } from "./services/webhookOutbox";
+import { A2FRuntimeService } from "./services/a2f-runtime/a2fRuntimeService";
+import { A2FFrameWsHub } from "./services/a2f-runtime/a2fFrameWsHub";
+import { InProcessA2FRuntimeClient } from "./services/a2f-runtime/runtimeServiceClient";
 
 export interface AppContext {
   app: express.Express;
@@ -60,6 +63,7 @@ export interface AppContext {
   webhookDispatcher: WebhookDispatcher;
   postMeetingProcessor: PostMeetingProcessor;
   meetingControlWsHub: MeetingControlWsHub;
+  a2fFrameWsHub: A2FFrameWsHub;
   avatarRuntimeSessionManager: AvatarRuntimeSessionManager;
   storage: StorageBackends;
 }
@@ -94,10 +98,14 @@ export async function createApp(): Promise<AppContext> {
     prefix: env.REDIS_PREFIX,
     ttlMs: env.REDIS_SESSION_TTL_MS
   });
+  const a2fRuntimeService = new A2FRuntimeService();
+  const a2fRuntimeClient = new InProcessA2FRuntimeClient(a2fRuntimeService);
+  const a2fFrameWsHub = new A2FFrameWsHub(a2fRuntimeClient);
   const avatarRuntimeSessionManager = new AvatarRuntimeSessionManager({
     runtimeEvents,
     controlWsHub: meetingControlWsHub,
-    sessionState: runtimeSessionState
+    sessionState: runtimeSessionState,
+    a2fRuntime: a2fRuntimeClient
   });
   meetingControlWsHub.setPauseChangeHandler(({ internalMeetingId, pauseEnabled }) => {
     if (pauseEnabled) {
@@ -157,6 +165,7 @@ export async function createApp(): Promise<AppContext> {
     interviewStore,
     avatarStateStore,
     runtimeEvents,
+    a2fRuntime: a2fRuntimeClient,
     sessionStateStore: runtimeSessionState,
     streamCallType: env.STREAM_CALL_TYPE
   });
@@ -181,7 +190,8 @@ export async function createApp(): Promise<AppContext> {
     ? createMetricsContext({
         sessionStore,
         webhookOutbox,
-        redisReconnects: storage.redisReconnects
+        redisReconnects: storage.redisReconnects,
+        a2fRuntimeStats: () => a2fRuntimeClient.listStats()
       })
     : undefined;
 
@@ -333,7 +343,8 @@ export async function createApp(): Promise<AppContext> {
       avatarStateStore,
       meetingStore,
       avatarRuntime: avatarRuntimeSessionManager,
-      sessionState: runtimeSessionState
+      sessionState: runtimeSessionState,
+      a2fRuntime: a2fRuntimeClient
     })
   );
 
@@ -370,6 +381,7 @@ export async function createApp(): Promise<AppContext> {
     webhookDispatcher,
     postMeetingProcessor,
     meetingControlWsHub,
+    a2fFrameWsHub,
     avatarRuntimeSessionManager,
     storage
   };

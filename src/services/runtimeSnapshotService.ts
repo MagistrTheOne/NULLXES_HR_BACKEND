@@ -7,6 +7,7 @@ import type { InMemoryMeetingStore } from "./meetingStore";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
 import type { InMemorySessionStore } from "./sessionStore";
+import type { A2FRuntimeClient } from "./a2f-runtime/runtimeServiceClient";
 
 const ACTIVE_MEETING_STATUSES = new Set(["starting", "in_meeting"]);
 
@@ -19,6 +20,7 @@ export class RuntimeSnapshotService {
       avatarStateStore: AvatarStateStore;
       runtimeEvents: RuntimeEventStore;
       sessionStateStore?: RuntimeSessionStateStore;
+      a2fRuntime?: A2FRuntimeClient;
       streamCallType: string;
     }
   ) {}
@@ -41,6 +43,7 @@ export class RuntimeSnapshotService {
     const lastCommand = await this.deps.runtimeEvents.getLastCommand(meetingId);
     const warnings: string[] = [];
     const canonicalState = await this.deps.sessionStateStore?.get(meetingId);
+    const a2fStats = this.deps.a2fRuntime?.getStats(meetingId);
 
     if (!session && meeting.sessionId) {
       warnings.push("session_missing");
@@ -88,6 +91,17 @@ export class RuntimeSnapshotService {
         lastCommand,
         agentPaused: lastCommand?.type === "agent.pause"
       },
+      a2fRuntime: a2fStats
+        ? {
+            fps: a2fStats.fps,
+            queueDepthMs: a2fStats.queueDepthMs,
+            avgLatencyMs: a2fStats.avgLatencyMs,
+            p95LatencyMs: a2fStats.p95LatencyMs,
+            droppedFrames: a2fStats.droppedFrames,
+            outputQueueDepth: a2fStats.outputQueueDepth,
+            gpuSlot: a2fStats.gpuSlot
+          }
+        : undefined,
       canonicalState: canonicalState
         ? {
             activeSpeaker: canonicalState.activeSpeaker,
