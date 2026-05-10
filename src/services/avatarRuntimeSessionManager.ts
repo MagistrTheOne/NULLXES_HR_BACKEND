@@ -12,6 +12,7 @@ import { withRetries } from "./retry";
 import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
 import type { RuntimeFrameEnvelope } from "./a2f-runtime/contracts";
 import type { A2FRuntimeClient } from "./a2f-runtime/runtimeServiceClient";
+import { probeEchoMimicRealtimeHealth } from "./echoMimicRealtimeClient";
 
 type RuntimeState = "idle" | "starting" | "active" | "degraded" | "paused" | "stopped";
 
@@ -100,8 +101,13 @@ export class AvatarRuntimeSessionManager {
     await this.options.sessionState?.upsert(input.meetingId, {
       activeSpeaker: "assistant",
       phase: "starting",
-      engine:
-        this.isBehaviorStreamPipelineEnabled() ? "behavior_static" : this.isLegacyAvatarPipelineEnabled() ? "echomimic" : "none",
+      engine: this.isBehaviorStreamPipelineEnabled()
+        ? "behavior_static"
+        : this.isEchomimicRealtimePipelineEnabled()
+          ? "echomimic_realtime"
+          : this.isLegacyAvatarPipelineEnabled()
+            ? "echomimic"
+            : "none",
       degradationLevel: 0,
       avatarReady: false
     });
@@ -109,7 +115,11 @@ export class AvatarRuntimeSessionManager {
       this.numericToInternal.set(input.numericMeetingId, input.meetingId);
     }
 
-    if (!this.isLegacyAvatarPipelineEnabled() && !this.isBehaviorStreamPipelineEnabled()) {
+    if (
+      !this.isLegacyAvatarPipelineEnabled() &&
+      !this.isBehaviorStreamPipelineEnabled() &&
+      !this.isEchomimicRealtimePipelineEnabled()
+    ) {
       session.state = "active";
       this.touch(session);
       await this.options.sessionState?.upsert(input.meetingId, {
@@ -180,6 +190,102 @@ export class AvatarRuntimeSessionManager {
           payload: { reason: "behavior_static_engine_start_failed", error: error instanceof Error ? error.message : String(error) }
         }).catch(() => undefined);
         logger.warn({ meetingId: input.meetingId, err: error }, "behavior_static engine start failed");
+      }
+      return;
+    }
+
+    if (this.isEchomimicRealtimePipelineEnabled()) {
+      const facialFrameRef: { current: RuntimeFrameEnvelope | null } = { current: null };
+      let facialFrameUnsub: (() => void) | undefined;
+      if (env.A2F_RUNTIME_ENABLED && this.options.a2fRuntime) {
+        facialFrameUnsub = this.options.a2fRuntime.subscribe(input.meetingId, {
+          format: "json",
+          onFrame: (frame) => {
+            if (!(frame instanceof Uint8Array)) {
+              facialFrameRef.current = frame;
+            }
+          }
+        });
+      }
+      const realtimeReadiness = await this.checkEchomimicRealtimeReadiness();
+      if (!realtimeReadiness.ok) {
+        facialFrameUnsub?.();
+        session.state = "degraded";
+        this.touch(session);
+        await this.options.sessionState?.upsert(input.meetingId, {
+          phase: "degraded",
+          degradationLevel: 2,
+          avatarReady: false
+        });
+        await this.options.runtimeEvents?.append({
+          type: "avatar.runtime.degraded",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: { reason: realtimeReadiness.reason, detail: realtimeReadiness.detail }
+        }).catch(() => undefined);
+        await this.options.runtimeEvents?.append({
+          type: "engine_degraded",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: { degradationLevel: 2, reason: realtimeReadiness.reason, detail: realtimeReadiness.detail }
+        }).catch(() => undefined);
+        logger.warn(
+          { meetingId: input.meetingId, reason: realtimeReadiness.reason, detail: realtimeReadiness.detail },
+          "echomimic_realtime degraded before start"
+        );
+        return;
+      }
+      const engine = new AvatarRuntimeEngine({
+        orchestrator: openai,
+        publisher: new StreamAgentPublisher(),
+        runpod,
+        clock,
+        runtimeEvents: this.options.runtimeEvents,
+        facialFrameRef
+      });
+      session.engine = engine;
+      session.facialFrameUnsub = facialFrameUnsub;
+      try {
+        await engine.start({ meetingId: input.meetingId, sessionId, openAiAudioRateHz: 24_000 });
+        session.state = "active";
+        this.touch(session);
+        await this.options.sessionState?.upsert(input.meetingId, {
+          phase: "in_meeting",
+          engine: "echomimic_realtime",
+          degradationLevel: 0,
+          avatarReady: true
+        });
+        await this.options.runtimeEvents?.append({
+          type: "avatar.runtime.started",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: { numericMeetingId: input.numericMeetingId, transport: "stream", renderer: "echomimic_realtime" }
+        }).catch(() => undefined);
+      } catch (error) {
+        session.facialFrameUnsub?.();
+        session.facialFrameUnsub = undefined;
+        session.state = "degraded";
+        session.engine = undefined;
+        this.touch(session);
+        await this.options.sessionState?.upsert(input.meetingId, {
+          phase: "degraded",
+          degradationLevel: 2,
+          avatarReady: false
+        });
+        await this.options.runtimeEvents?.append({
+          type: "avatar.runtime.degraded",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: {
+            reason: "echomimic_realtime_engine_start_failed",
+            error: error instanceof Error ? error.message : String(error)
+          }
+        }).catch(() => undefined);
+        logger.warn({ meetingId: input.meetingId, err: error }, "echomimic_realtime engine start failed");
       }
       return;
     }
@@ -611,6 +717,30 @@ export class AvatarRuntimeSessionManager {
       Boolean(env.STREAM_API_KEY?.trim()) &&
       Boolean(env.STREAM_API_SECRET?.trim())
     );
+  }
+
+  /** EchoMimic 8889 realtime WS + Stream publisher (see docs/ECHOMIMIC-8889-REALTIME-WIRE.md). */
+  private isEchomimicRealtimePipelineEnabled(): boolean {
+    return (
+      env.AVATAR_ENABLED &&
+      env.AVATAR_VIDEO_ENABLED &&
+      env.VIDEO_MODEL === "echomimic_realtime" &&
+      Boolean(env.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim()) &&
+      Boolean(env.STREAM_API_KEY?.trim()) &&
+      Boolean(env.STREAM_API_SECRET?.trim())
+    );
+  }
+
+  private async checkEchomimicRealtimeReadiness(): Promise<{ ok: boolean; reason?: string; detail?: unknown }> {
+    const url = env.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim();
+    if (!url) {
+      return { ok: false, reason: "echomimic_realtime_url_missing" };
+    }
+    if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) {
+      return { ok: false, reason: "stream_unconfigured" };
+    }
+    const h = await probeEchoMimicRealtimeHealth(url);
+    return h.ok ? { ok: true } : { ok: false, reason: "echomimic_realtime_unreachable", detail: h.detail };
   }
 
   private resolveSession(meetingId: string | undefined): RuntimeSession | undefined {

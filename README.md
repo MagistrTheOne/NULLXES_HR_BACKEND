@@ -250,6 +250,29 @@ curl -i "http://localhost:8080/ops/webhooks"
 
 Полный cinematic путь по-прежнему: `VIDEO_MODEL=echomimic` + `RUNPOD_WORKER_URL` и т.д.
 
+## Phase 5A — EchoMimic realtime (8889) + Luna
+
+Низколатентный нейро-рендер: gateway открывает WebSocket на воркер **8889**, шлёт `ingest` (PCM16 + опционально A2F), получает `frame` (I420) и публикует в Stream. Контракт: [`docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](./docs/ECHOMIMIC-8889-REALTIME-WIRE.md).
+
+**Env (gateway / DigitalOcean `systemd` drop-in или `.env`):**
+
+| Переменная | Назначение |
+|------------|------------|
+| `VIDEO_MODEL=echomimic_realtime` | Включить realtime-пайплайн |
+| `RUNPOD_ECHOMIMIC_REALTIME_URL` | База `https://…-8889.proxy.runpod.net` |
+| `RUNPOD_ECHOMIMIC_REALTIME_BEARER` | Опционально: Bearer для HTTP/WS |
+| `LUNA_REF_IMAGE_PATH` | Путь ref на GPU (default `/workspace/test_assets/luna.jpg`) |
+| `STREAM_API_KEY`, `STREAM_API_SECRET` | Как для `behavior_static` |
+| `A2F_GPU_RUNTIME_WS_URL` + `A2F_RUNTIME_TRANSPORT=gpu_pod` | Опционально: мультиплекс A2F в ingest |
+
+**Smoke на дроплете:**
+
+```bash
+curl -sS http://127.0.0.1:8080/avatar/health
+```
+
+В JSON смотрите `echomimicRealtimeReachable` и `echomimicRealtimeLatencyMs` (проба `/realtime/v1/health` или `/health` на 8889).
+
 ## Docker
 
 Build:

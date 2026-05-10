@@ -117,7 +117,8 @@ const envSchema = z.object({
   RUNPOD_WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   RUNPOD_WORKER_RETURN_FRAMES: envBoolean(true),
   /** `behavior_static` — Stream agent publishes live I420 without EchoMimic worker (A2F-driven mouth modulation when enabled). */
-  VIDEO_MODEL: z.enum(["wan", "echomimic", "none", "behavior_static"]).default("none"),
+  /** `echomimic_realtime` — WebSocket to 8889 worker; PCM+A2F ingest, I420 frames to Stream (see docs/ECHOMIMIC-8889-REALTIME-WIRE.md). */
+  VIDEO_MODEL: z.enum(["wan", "echomimic", "none", "behavior_static", "echomimic_realtime"]).default("none"),
   AVATAR_VIDEO_ENABLED: envBoolean(true),
   AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
   AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),
@@ -138,6 +139,12 @@ const envSchema = z.object({
   A2F_RUNTIME_MAX_QUEUE_MS: z.coerce.number().int().min(80).max(2_000).default(200),
   /** External GPU batch avatar runtime (orchestration only; no inference in gateway). */
   RUNPOD_RUNTIME_URL: z.string().url().optional(),
+  /** EchoMimic 8889 realtime worker (WS + optional HTTP session). Required when VIDEO_MODEL=echomimic_realtime. */
+  RUNPOD_ECHOMIMIC_REALTIME_URL: z.string().url().optional(),
+  /** Optional Bearer token for 8889 realtime HTTP + WS hello. */
+  RUNPOD_ECHOMIMIC_REALTIME_BEARER: z.string().optional(),
+  /** Default Luna reference path on the GPU filesystem (sent in hello / session). */
+  LUNA_REF_IMAGE_PATH: z.string().min(1).default("/workspace/test_assets/luna.jpg"),
   RUNPOD_GENERATE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   AVATAR_GENERATE_JOB_TTL_MS: z.coerce.number().int().positive().default(86400000),
   /** Wall clock from `startedAt` after which the job fails with `generation_timeout`. */
@@ -225,6 +232,14 @@ const envSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["A2F_GPU_RUNTIME_WS_URL"],
       message: "A2F_GPU_RUNTIME_WS_URL is required when A2F_RUNTIME_TRANSPORT=gpu_pod"
+    });
+  }
+
+  if (values.VIDEO_MODEL === "echomimic_realtime" && !values.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["RUNPOD_ECHOMIMIC_REALTIME_URL"],
+      message: "RUNPOD_ECHOMIMIC_REALTIME_URL is required when VIDEO_MODEL=echomimic_realtime"
     });
   }
 });

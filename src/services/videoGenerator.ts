@@ -1,7 +1,7 @@
 import { env } from "../config/env";
 import type { RunpodWorkerClient, RunpodGenerateClipResponse } from "./runpodWorkerClient";
 
-export type VideoModel = "wan" | "echomimic" | "none";
+export type VideoModel = "wan" | "echomimic" | "echomimic_realtime" | "none";
 
 export type AudioWindow = {
   /** base64 PCM16 LE audio for this clip window (authoritative OpenAI clock). */
@@ -76,6 +76,15 @@ export class EchoMimicGenerator implements VideoGenerator {
 
 export function createVideoGenerator(worker: RunpodWorkerClient): VideoGenerator {
   const model = env.VIDEO_MODEL as VideoModel;
+  if (model === "echomimic_realtime") {
+    return {
+      warmup: async () => undefined,
+      generateClip: async () => {
+        throw new Error("VIDEO_MODEL=echomimic_realtime uses WebSocket ingest, not generateClip");
+      },
+      unload: async () => undefined
+    } satisfies VideoGenerator;
+  }
   if (model === "echomimic") return new EchoMimicGenerator(worker);
   return {
     warmup: async () => undefined,

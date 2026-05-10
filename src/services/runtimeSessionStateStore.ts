@@ -8,7 +8,7 @@ export type CanonicalRuntimePhase =
   | "failed"
   | "degraded";
 
-export type CanonicalEngine = "echomimic" | "arachne" | "behavior_static" | "none";
+export type CanonicalEngine = "echomimic" | "echomimic_realtime" | "arachne" | "behavior_static" | "none";
 
 export interface RuntimeSessionState {
   schemaVersion: "1.0";

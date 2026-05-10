@@ -10,6 +10,7 @@ import { withRetries } from "./retry";
 import { createStaticI420Frame } from "./staticI420Frame";
 import type { MasterClock } from "./masterClock";
 import type { RuntimeFrameEnvelope } from "./a2f-runtime/contracts";
+import { EchoMimicRealtimeClient } from "./echoMimicRealtimeClient";
 
 function base64FromBytes(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
@@ -58,6 +59,7 @@ export class AvatarRuntimeEngine {
   private chunkViolationCount = 0;
   private lastChunkSizeMs = 0;
   private readonly facialFrameRef?: { current: RuntimeFrameEnvelope | null };
+  private readonly echoRealtime: EchoMimicRealtimeClient | null;
 
   constructor(input: {
     orchestrator: OpenAiRealtimeOrchestrator;
@@ -78,6 +80,7 @@ export class AvatarRuntimeEngine {
     this.clock = input.clock;
     this.runtimeEvents = input.runtimeEvents;
     this.facialFrameRef = input.facialFrameRef;
+    this.echoRealtime = env.VIDEO_MODEL === "echomimic_realtime" ? new EchoMimicRealtimeClient() : null;
     this.fps = input.fps ?? 25;
     this.latencyCompensationMs = input.latencyCompensationMs ?? 1200;
     this.minBufferSeconds = input.minBufferSeconds ?? 2.0;
@@ -101,6 +104,17 @@ export class AvatarRuntimeEngine {
       sessionId: input.sessionId,
       audioInRateHz: input.openAiAudioRateHz
     });
+
+    if (this.echoRealtime) {
+      await this.echoRealtime.connect({
+        meetingId: input.meetingId,
+        sessionId: input.sessionId,
+        refImagePath: env.LUNA_REF_IMAGE_PATH,
+        width: 512,
+        height: 512,
+        targetFps: this.fps
+      });
+    }
 
     // Subscribe to OpenAI orchestrator events.
     const unsubscribe = this.orchestrator.onEvent((meetingId, sessionId, event) => {
@@ -165,6 +179,14 @@ export class AvatarRuntimeEngine {
         sampleRateHz: input.sampleRateHz,
         pcm16: chunk.samples
       });
+      if (this.echoRealtime) {
+        this.echoRealtime.sendIngest({
+          timestampMs: chunk.startMs,
+          sampleRateHz: input.sampleRateHz,
+          pcm16Base64: Buffer.from(chunk.pcm16).toString("base64"),
+          a2f: this.facialFrameRef?.current ?? null
+        });
+      }
     }
     this.applyAudioQueueBudget();
 
@@ -185,6 +207,7 @@ export class AvatarRuntimeEngine {
     if (this.telemetryTimer) clearInterval(this.telemetryTimer);
     this.videoTickTimer = null;
     this.telemetryTimer = null;
+    this.echoRealtime?.stop();
     void this.publisher.close().catch(() => undefined);
   }
 
@@ -227,6 +250,27 @@ export class AvatarRuntimeEngine {
     if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
 
+    if (env.VIDEO_MODEL === "echomimic_realtime") {
+      const targetTime = this.orchestrator.getAudioClockMs(this.meetingId) ?? this.clock.nowMs();
+      const frame = this.echoRealtime?.peekLatestFrame();
+      if (frame) {
+        await this.publisher
+          .publishVideoFrameI420(frame.i420, frame.width, frame.height, targetTime)
+          .catch(() => undefined);
+        this.publishedFrames += 1;
+      } else if (env.AVATAR_VIDEO_DEGRADED_FALLBACK === "static") {
+        const width = 512;
+        const height = 512;
+        this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
+        await this.publisher
+          .publishVideoFrameI420(this.idleFallbackFrame(this.staticFallbackFrame.data, width, height), width, height, targetTime)
+          .catch(() => undefined);
+        this.publishedFrames += 1;
+        this.underrunCount += 1;
+      }
+      return;
+    }
+
     if (env.VIDEO_MODEL === "behavior_static") {
       const width = 512;
       const height = 512;
@@ -267,7 +311,7 @@ export class AvatarRuntimeEngine {
     if (!this.running || !this.meetingId || !this.sessionId) return;
     if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
-    if (env.VIDEO_MODEL === "behavior_static") return;
+    if (env.VIDEO_MODEL === "behavior_static" || env.VIDEO_MODEL === "echomimic_realtime") return;
     if (!this.runpod.isConfigured()) return;
     if (env.VIDEO_MODEL !== "echomimic") return;
     if (this.inFlight >= this.maxInFlight) return;

@@ -5,6 +5,8 @@ This worker is **inference-only** and exposes:
 - `GET /health`
 - `POST /generate_clip`
 
+Phase **5A** realtime (8889 WebSocket + `/realtime/v1/*`) is specified in the gateway repo: [`../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md) — implement there when the GPU service should stream I420 back to the gateway (this Python app does not yet include those routes).
+
 It **does not** run Stream SDK or WebRTC.
 
 ## RunPod setup (H200)

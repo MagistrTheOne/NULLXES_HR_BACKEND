@@ -8,6 +8,7 @@ import { AvatarGenerateJobStore } from "../services/avatarGenerateJobStore";
 import { AvatarGenerateRunpodService, type UploadedGenerateFiles } from "../services/avatarGenerateRunpodService";
 import { startAvatarGenerateStaleSweeper } from "../services/avatarGenerateStaleJobSweeper";
 import type { MinimalRedisClient } from "../services/redisClient";
+import { probeEchoMimicRealtimeHealth } from "../services/echoMimicRealtimeClient";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -80,6 +81,16 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
         runtimeLatencyMs = typeof probe.latencyMs === "number" && Number.isFinite(probe.latencyMs) ? probe.latencyMs : null;
       }
 
+      let echomimicRealtimeReachable = false;
+      let echomimicRealtimeLatencyMs: number | null = null;
+      const emRt = env.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim();
+      if (emRt) {
+        const emProbe = await probeEchoMimicRealtimeHealth(emRt);
+        echomimicRealtimeReachable = emProbe.ok;
+        echomimicRealtimeLatencyMs =
+          typeof emProbe.latencyMs === "number" && Number.isFinite(emProbe.latencyMs) ? emProbe.latencyMs : null;
+      }
+
       const lastSuccessfulGenerationAt = await readLastSuccessfulGenerationAt(deps.redis, env.REDIS_PREFIX);
 
       res.status(200).json({
@@ -87,6 +98,8 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
         redisReachable: redisOk,
         streamConfigured,
         runtimeLatencyMs,
+        echomimicRealtimeReachable,
+        echomimicRealtimeLatencyMs,
         lastSuccessfulGenerationAt
       });
     })

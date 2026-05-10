@@ -9,7 +9,7 @@ Schema (`1.0`):
 - `meetingId: string`
 - `activeSpeaker: "candidate" | "assistant"`
 - `phase: "starting" | "in_meeting" | "paused" | "stopped" | "failed" | "degraded"`
-- `engine: "echomimic" | "arachne" | "none"`
+- `engine: "echomimic" | "echomimic_realtime" | "arachne" | "behavior_static" | "none"`
 - `degradationLevel: 0 | 1 | 2 | 3 | 4`
 - `avatarReady: boolean`
 - `revision: number`

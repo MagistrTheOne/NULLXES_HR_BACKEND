@@ -11,15 +11,19 @@
 4. **Publish:** Existing `StreamAgentPublisher` — one HR video + agent TTS audio.
 5. **Frontend:** HR tile subscribes to agent Stream video; placeholder = `luna.jpg` until track frames; bridge 8891 remains optional HUD.
 
+## Wire protocol (frozen)
+
+See [`docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](ECHOMIMIC-8889-REALTIME-WIRE.md).
+
 ## Implementation checklist (ordered)
 
-- [ ] **Wire protocol:** Document 8889 realtime API (auth, frame format, session start, Luna ref path) in this file or `README.md`.
-- [ ] **Env:** Split/clarify `RUNPOD_RUNTIME_URL` (8889) vs any generate-only URL; document `A2F_GPU_RUNTIME_WS_URL` (8890), optional `NEXT_PUBLIC_RUNPOD_BRIDGE_WS_URL` (8891).
-- [ ] **Gateway:** `echoMimicRealtimeClient` (or extend `RunpodWorkerClient`) + session lifecycle tied to `AvatarRuntimeSessionManager`.
-- [ ] **Gateway:** Feed aligned A2F envelopes + PCM into 8889; handle reconnect.
-- [ ] **Gateway:** `AvatarRuntimeEngine` / `VIDEO_MODEL` branch for realtime frames → I420 publish (or accept I420 from pod).
-- [ ] **DO:** Systemd/env smoke — `GET /avatar/health`, probe `gpuReachable`.
-- [ ] **Frontend:** `avatar-stream-card` — Luna placeholder + prioritize live agent `<video>` when track active.
+- [x] **Wire protocol:** `docs/ECHOMIMIC-8889-REALTIME-WIRE.md`
+- [x] **Env:** `RUNPOD_ECHOMIMIC_REALTIME_URL` (8889 realtime) vs `RUNPOD_RUNTIME_URL` (avatar-generate batch); `LUNA_REF_IMAGE_PATH`; optional `RUNPOD_ECHOMIMIC_REALTIME_BEARER`. A2F: `A2F_GPU_RUNTIME_WS_URL` (8890); bridge: `NEXT_PUBLIC_RUNPOD_BRIDGE_WS_URL` (8891) — README.
+- [x] **Gateway:** `EchoMimicRealtimeClient` + `AvatarRuntimeSessionManager` (`VIDEO_MODEL=echomimic_realtime`).
+- [x] **Gateway:** WS `ingest` carries PCM + optional A2F JSON per chunk (reconnect: future iteration).
+- [x] **Gateway:** `AvatarRuntimeEngine` publishes latest worker I420 at tick FPS; static fallback if no frame yet.
+- [x] **DO / smoke:** `GET /avatar/health` → `echomimicRealtimeReachable`, `echomimicRealtimeLatencyMs`.
+- [x] **Frontend:** `avatar-stream-card` — `/luna.jpg` placeholder; `ParticipantView` when agent has video.
 
 ## Out of scope (explicit)
 
