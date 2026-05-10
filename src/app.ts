@@ -14,6 +14,7 @@ import {
 } from "./middleware/rateLimit";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { createAvatarRouter } from "./routes/avatar.routes";
+import { createAvatarGenerateRouter } from "./routes/avatarGenerate.routes";
 import { createInterviewsRouter } from "./routes/interviews.routes";
 import { createJobAiRouter } from "./routes/jobai.routes";
 import {
@@ -370,6 +371,7 @@ export async function createApp(): Promise<AppContext> {
     })
   );
 
+  app.use("/avatar", createAvatarGenerateRouter({ redis: storage.redis }));
   app.use(
     "/avatar",
     createAvatarRouter({ avatarClient, stateStore: avatarStateStore, meetingOrchestrator, runtimeEvents })

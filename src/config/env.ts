@@ -134,7 +134,21 @@ const envSchema = z.object({
   A2F_RUNTIME_TARGET_FPS: z.coerce.number().int().min(10).max(120).default(30),
   A2F_RUNTIME_WINDOW_MS: z.coerce.number().int().min(20).max(120).default(40),
   A2F_RUNTIME_HOP_MS: z.coerce.number().int().min(10).max(80).default(20),
-  A2F_RUNTIME_MAX_QUEUE_MS: z.coerce.number().int().min(80).max(2_000).default(200)
+  A2F_RUNTIME_MAX_QUEUE_MS: z.coerce.number().int().min(80).max(2_000).default(200),
+  /** External GPU batch avatar runtime (orchestration only; no inference in gateway). */
+  RUNPOD_RUNTIME_URL: z.string().url().optional(),
+  RUNPOD_GENERATE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  AVATAR_GENERATE_JOB_TTL_MS: z.coerce.number().int().positive().default(86400000),
+  /** Wall clock from `startedAt` after which the job fails with `generation_timeout`. */
+  AVATAR_GENERATE_WALL_MS: z.coerce.number().int().positive().default(180_000),
+  /** If a job stays in `processing` longer than this, stale sweeper marks it failed (`processing_stale`). */
+  AVATAR_GENERATE_PROCESSING_STALE_MS: z.coerce.number().int().positive().default(600_000),
+  AVATAR_GENERATE_RETRY_BACKOFF_1_MS: z.coerce.number().int().positive().default(2000),
+  AVATAR_GENERATE_RETRY_BACKOFF_2_MS: z.coerce.number().int().positive().default(5000),
+  AVATAR_GENERATE_STALE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Alias for Stream credentials (falls back to STREAM_API_KEY / STREAM_API_SECRET). */
+  GETSTREAM_API_KEY: z.string().min(1).optional(),
+  GETSTREAM_SECRET: z.string().min(1).optional()
 }).superRefine((values, ctx) => {
   if (values.JOBAI_WEBHOOK_ENABLED) {
     if (!values.JOBAI_WEBHOOK_URL) {
@@ -225,3 +239,10 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 export type AppEnv = typeof env;
+
+export function resolveGetstreamApiCredentials(): { apiKey: string | undefined; apiSecret: string | undefined } {
+  return {
+    apiKey: env.GETSTREAM_API_KEY ?? env.STREAM_API_KEY,
+    apiSecret: env.GETSTREAM_SECRET ?? env.STREAM_API_SECRET
+  };
+}
