@@ -105,6 +105,18 @@ export class AvatarRuntimeSessionManager {
       this.numericToInternal.set(input.numericMeetingId, input.meetingId);
     }
 
+    if (!this.isLegacyAvatarPipelineEnabled()) {
+      session.state = "active";
+      this.touch(session);
+      await this.options.sessionState?.upsert(input.meetingId, {
+        phase: "in_meeting",
+        engine: "none",
+        degradationLevel: 0,
+        avatarReady: false
+      });
+      return;
+    }
+
     const readiness = await this.checkProductionReadiness(runpod);
     if (!readiness.ok) {
       session.state = "degraded";
@@ -515,6 +527,10 @@ export class AvatarRuntimeSessionManager {
       detail: error instanceof Error ? error.message : String(error)
     }));
     return health.ok ? { ok: true } : { ok: false, reason: "runpod_unhealthy", detail: health.detail };
+  }
+
+  private isLegacyAvatarPipelineEnabled(): boolean {
+    return env.AVATAR_ENABLED && env.AVATAR_VIDEO_ENABLED && env.VIDEO_MODEL === "echomimic";
   }
 
   private resolveSession(meetingId: string | undefined): RuntimeSession | undefined {

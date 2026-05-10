@@ -3,6 +3,18 @@ import { z } from "zod";
 
 dotenv.config();
 
+const envBoolean = (defaultValue: boolean) =>
+  z.preprocess((value) => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "n", "off", ""].includes(normalized)) return false;
+    }
+    return value;
+  }, z.boolean().default(defaultValue));
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
@@ -13,7 +25,7 @@ const envSchema = z.object({
   // alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar.
   // Default to a feminine sounding voice for HR interviewer tone.
   OPENAI_REALTIME_VOICE: z.string().default("coral"),
-  OPENAI_TURN_DETECTION_ENABLED: z.coerce.boolean().default(false),
+  OPENAI_TURN_DETECTION_ENABLED: envBoolean(false),
   OPENAI_TURN_DETECTION_TYPE: z.enum(["server_vad"]).default("server_vad"),
   OPENAI_TURN_DETECTION_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
   OPENAI_TURN_DETECTION_PREFIX_PADDING_MS: z.coerce.number().int().min(0).default(450),
@@ -22,7 +34,7 @@ const envSchema = z.object({
   SESSION_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   SDP_MAX_BYTES: z.coerce.number().int().positive().default(200000),
   OPENAI_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
-  JOBAI_WEBHOOK_ENABLED: z.coerce.boolean().default(false),
+  JOBAI_WEBHOOK_ENABLED: envBoolean(false),
   JOBAI_WEBHOOK_URL: z.string().url().optional(),
   JOBAI_WEBHOOK_SECRET: z.string().min(16).optional(),
   JOBAI_WEBHOOK_DISPATCH_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
@@ -45,9 +57,9 @@ const envSchema = z.object({
   REDIS_HEARTBEAT_MS: z.coerce.number().int().positive().default(15000),
   REDIS_COMMAND_QUEUE_LIMIT: z.coerce.number().int().positive().default(100),
   CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
-  METRICS_ENABLED: z.coerce.boolean().default(true),
-  RATE_LIMIT_ENABLED: z.coerce.boolean().default(true),
-  RATE_LIMIT_TRUST_PROXY: z.coerce.boolean().default(true),
+  METRICS_ENABLED: envBoolean(true),
+  RATE_LIMIT_ENABLED: envBoolean(true),
+  RATE_LIMIT_TRUST_PROXY: envBoolean(true),
   CANDIDATE_ADMISSION_REJOIN_WINDOW_MS: z.coerce.number().int().positive().default(60000),
   MEETING_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(14_400_000),
   MEETING_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
@@ -61,7 +73,7 @@ const envSchema = z.object({
   JOIN_TOKEN_FRONTEND_BASE_URL: z.string().url().default("http://localhost:3000"),
   JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100),
   // Avatar service (RunPod H200 pod, see avatarservicenullxes)
-  AVATAR_ENABLED: z.coerce.boolean().default(false),
+  AVATAR_ENABLED: envBoolean(false),
   AVATAR_POD_URL: z.string().url().optional(),
   AVATAR_SHARED_TOKEN: z.string().min(16).optional(),
   AVATAR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
@@ -103,15 +115,15 @@ const envSchema = z.object({
   RUNPOD_WORKER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
   RUNPOD_WORKER_MAX_INFLIGHT: z.coerce.number().int().min(1).max(8).default(1),
   RUNPOD_WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
-  RUNPOD_WORKER_RETURN_FRAMES: z.coerce.boolean().default(true),
+  RUNPOD_WORKER_RETURN_FRAMES: envBoolean(true),
   VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
-  AVATAR_VIDEO_ENABLED: z.coerce.boolean().default(true),
+  AVATAR_VIDEO_ENABLED: envBoolean(true),
   AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
   AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),
   AVATAR_AUDIO_CHUNK_MAX_MS: z.coerce.number().int().min(20).max(40).default(40),
   AVATAR_AUDIO_QUEUE_BUDGET_MS: z.coerce.number().int().min(80).max(2_000).default(200),
-  ANAM_ENABLED: z.coerce.boolean().default(false),
-  A2F_RUNTIME_ENABLED: z.coerce.boolean().default(true),
+  ANAM_ENABLED: envBoolean(false),
+  A2F_RUNTIME_ENABLED: envBoolean(true),
   A2F_RUNTIME_TRANSPORT: z.enum(["inprocess", "gpu_pod"]).default("inprocess"),
   A2F_GPU_RUNTIME_WS_URL: z.string().url().optional(),
   A2F_GPU_RUNTIME_HEALTH_URL: z.string().url().optional(),
