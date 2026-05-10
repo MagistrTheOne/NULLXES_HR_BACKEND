@@ -300,33 +300,78 @@ export class AvatarGenerateRunpodService {
 
   async probeHealth(): Promise<{ ok: boolean; status?: number; detail?: string; latencyMs?: number }> {
     const base = normalizeRunpodBase(this.deps.runpodBaseUrl);
-    const candidates = [`${base}/health`, `${base}/`];
+    /** RunPod / external GPU often exposes `GET /warmup` with `{ status, gpu, latencyMs }`. */
+    const candidates = [`${base}/warmup`, `${base}/health`, `${base}/`];
     let lastLatencyMs: number | undefined;
-    for (const url of candidates) {
+    let lastHttpDetail = "";
+
+    for (let i = 0; i < candidates.length; i++) {
+      const url = candidates[i];
       const t0 = Date.now();
       try {
         const res = await fetch(url, {
           method: "GET",
           signal: AbortSignal.timeout(5000)
         });
-        lastLatencyMs = Date.now() - t0;
-        if (res.ok) {
-          return { ok: true, status: res.status, latencyMs: lastLatencyMs };
+        const elapsed = Date.now() - t0;
+        lastLatencyMs = elapsed;
+        const text = await res.text().catch(() => "");
+        let json: unknown;
+        try {
+          json = text ? JSON.parse(text) : undefined;
+        } catch {
+          json = undefined;
         }
-        return {
-          ok: false,
-          status: res.status,
-          detail: await res.text().catch(() => ""),
-          latencyMs: lastLatencyMs
-        };
+
+        if (!res.ok) {
+          lastHttpDetail = text.slice(0, 300);
+          if (i < candidates.length - 1) {
+            continue;
+          }
+          return {
+            ok: false,
+            status: res.status,
+            detail: lastHttpDetail,
+            latencyMs: lastLatencyMs
+          };
+        }
+
+        const warmSchemaOk = isRunpodWarmupHealthy(json);
+        const reported = extractWarmupLatencyMs(json);
+
+        if (warmSchemaOk) {
+          return {
+            ok: true,
+            status: res.status,
+            latencyMs: reported != null ? reported : elapsed
+          };
+        }
+
+        // Legacy runtimes: HTTP 200 on /health or / without JSON warmup shape
+        return { ok: true, status: res.status, latencyMs: reported ?? elapsed };
       } catch (e) {
         lastLatencyMs = Date.now() - t0;
         const detail = e instanceof Error ? e.message : String(e);
-        if (url === candidates[candidates.length - 1]) {
+        if (i >= candidates.length - 1) {
           return { ok: false, detail, latencyMs: lastLatencyMs };
         }
       }
     }
     return { ok: false, detail: "unreachable", latencyMs: lastLatencyMs };
   }
+}
+
+function isRunpodWarmupHealthy(json: unknown): boolean {
+  if (!json || typeof json !== "object") return false;
+  const o = json as Record<string, unknown>;
+  return o.status === "warm" || o.gpu === "ready";
+}
+
+function extractWarmupLatencyMs(json: unknown): number | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  const lm = (json as Record<string, unknown>).latencyMs;
+  if (typeof lm === "number" && Number.isFinite(lm)) {
+    return lm;
+  }
+  return undefined;
 }
