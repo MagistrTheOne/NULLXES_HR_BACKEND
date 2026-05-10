@@ -239,6 +239,17 @@ Webhook queue stats:
 curl -i "http://localhost:8080/ops/webhooks"
 ```
 
+## HR Stream agent (Phase 5 — без EchoMimic worker)
+
+Чтобы в Stream появился участник `agent_<sessionId>` с **video+audio** (и HR-плитка перестала показывать `agentFound: false`), на gateway нужны ключи Stream и включённый аватар-пайплайн:
+
+- `AVATAR_ENABLED=1`
+- `AVATAR_VIDEO_ENABLED=1`
+- `VIDEO_MODEL=behavior_static` — публикует I420 через [`StreamAgentPublisher`](./src/services/streamAgentPublisher.ts) без RunPod EchoMimic; при `A2F_RUNTIME_ENABLED` рот модулируется по последнему кадру A2F.
+- `STREAM_API_KEY`, `STREAM_API_SECRET`
+
+Полный cinematic путь по-прежнему: `VIDEO_MODEL=echomimic` + `RUNPOD_WORKER_URL` и т.д.
+
 ## Docker
 
 Build:

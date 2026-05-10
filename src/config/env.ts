@@ -116,7 +116,8 @@ const envSchema = z.object({
   RUNPOD_WORKER_MAX_INFLIGHT: z.coerce.number().int().min(1).max(8).default(1),
   RUNPOD_WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   RUNPOD_WORKER_RETURN_FRAMES: envBoolean(true),
-  VIDEO_MODEL: z.enum(["wan", "echomimic", "none"]).default("none"),
+  /** `behavior_static` — Stream agent publishes live I420 without EchoMimic worker (A2F-driven mouth modulation when enabled). */
+  VIDEO_MODEL: z.enum(["wan", "echomimic", "none", "behavior_static"]).default("none"),
   AVATAR_VIDEO_ENABLED: envBoolean(true),
   AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
   AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),

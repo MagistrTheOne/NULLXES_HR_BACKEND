@@ -9,6 +9,7 @@ import type { AgentMediaPublisher } from "./streamAgentPublisher";
 import { withRetries } from "./retry";
 import { createStaticI420Frame } from "./staticI420Frame";
 import type { MasterClock } from "./masterClock";
+import type { RuntimeFrameEnvelope } from "./a2f-runtime/contracts";
 
 function base64FromBytes(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
@@ -56,6 +57,7 @@ export class AvatarRuntimeEngine {
   private underrunCount = 0;
   private chunkViolationCount = 0;
   private lastChunkSizeMs = 0;
+  private readonly facialFrameRef?: { current: RuntimeFrameEnvelope | null };
 
   constructor(input: {
     orchestrator: OpenAiRealtimeOrchestrator;
@@ -67,12 +69,15 @@ export class AvatarRuntimeEngine {
     latencyCompensationMs?: number;
     minBufferSeconds?: number;
     maxBufferSeconds?: number;
+    /** Latest A2F frame for `behavior_static` mouth modulation (optional). */
+    facialFrameRef?: { current: RuntimeFrameEnvelope | null };
   }) {
     this.orchestrator = input.orchestrator;
     this.publisher = input.publisher;
     this.runpod = input.runpod;
     this.clock = input.clock;
     this.runtimeEvents = input.runtimeEvents;
+    this.facialFrameRef = input.facialFrameRef;
     this.fps = input.fps ?? 25;
     this.latencyCompensationMs = input.latencyCompensationMs ?? 1200;
     this.minBufferSeconds = input.minBufferSeconds ?? 2.0;
@@ -220,7 +225,22 @@ export class AvatarRuntimeEngine {
   private async videoTick(): Promise<void> {
     if (!this.running || !this.meetingId) return;
     if (this.paused || this.stoppedAtMs !== null) return;
-    if (!env.AVATAR_VIDEO_ENABLED || env.VIDEO_MODEL !== "echomimic") return;
+    if (!env.AVATAR_VIDEO_ENABLED) return;
+
+    if (env.VIDEO_MODEL === "behavior_static") {
+      const width = 512;
+      const height = 512;
+      this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
+      const mouthOpen = readJawOpenFromFacialRef(this.facialFrameRef?.current);
+      const frameBuf = this.behaviorStaticFrame(this.staticFallbackFrame.data, width, height, mouthOpen);
+      await this.publisher
+        .publishVideoFrameI420(frameBuf, width, height, this.orchestrator.getAudioClockMs(this.meetingId) ?? this.clock.nowMs())
+        .catch(() => undefined);
+      this.publishedFrames += 1;
+      return;
+    }
+
+    if (env.VIDEO_MODEL !== "echomimic") return;
     const audioClock = this.orchestrator.getAudioClockMs(this.meetingId) ?? this.clock.nowMs();
     const targetTime = audioClock - this.latencyCompensationMs;
     const frame = this.clipBuffer.getFrameAtTime(targetTime);
@@ -247,6 +267,7 @@ export class AvatarRuntimeEngine {
     if (!this.running || !this.meetingId || !this.sessionId) return;
     if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
+    if (env.VIDEO_MODEL === "behavior_static") return;
     if (!this.runpod.isConfigured()) return;
     if (env.VIDEO_MODEL !== "echomimic") return;
     if (this.inFlight >= this.maxInFlight) return;
@@ -435,6 +456,31 @@ export class AvatarRuntimeEngine {
     }
   }
 
+  private behaviorStaticFrame(frame: Buffer, width: number, height: number, mouthOpen: number): Buffer {
+    const out = Buffer.from(frame);
+    const ySize = width * height;
+    const cx = Math.floor(width * 0.5);
+    const cy = Math.floor(height * 0.58);
+    const rx = Math.floor(width * 0.14);
+    const ry = Math.floor(height * 0.06);
+    const boost = Math.round(mouthOpen * 28);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const dx = (x - cx) / rx;
+        const dy = (y - cy) / ry;
+        if (dx * dx + dy * dy <= 1) {
+          const i = y * width + x;
+          out[i] = Math.max(0, Math.min(255, (out[i] ?? 0) + boost));
+        }
+      }
+    }
+    const pulse = Math.round(Math.sin(this.clock.nowMs() / 450) * 3);
+    for (let i = 0; i < ySize; i += 6) {
+      out[i] = Math.max(0, Math.min(255, (out[i] ?? 0) + pulse));
+    }
+    return out;
+  }
+
   private idleFallbackFrame(frame: Buffer, width: number, height: number): Buffer {
     const out = Buffer.from(frame);
     const ySize = width * height;
@@ -535,5 +581,19 @@ export class AvatarRuntimeEngine {
     const sampleCount = Math.max(0, Math.floor((durationMs * sampleRateHz) / 1000));
     return new Int16Array(sampleCount);
   }
+}
+
+function readJawOpenFromFacialRef(frame: RuntimeFrameEnvelope | null | undefined): number {
+  if (!frame?.blendshapes?.length) {
+    return typeof frame?.audioPower === "number" ? Math.max(0, Math.min(1, frame.audioPower * 2)) : 0;
+  }
+  const patterns = [/jaw.*open/i, /mouth.*open/i];
+  for (const re of patterns) {
+    const hit = frame.blendshapes.find((b) => re.test(b.name));
+    if (hit && typeof hit.value === "number") {
+      return Math.max(0, Math.min(1, hit.value));
+    }
+  }
+  return typeof frame.audioPower === "number" ? Math.max(0, Math.min(1, frame.audioPower * 2)) : 0;
 }
 

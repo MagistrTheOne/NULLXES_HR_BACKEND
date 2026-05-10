@@ -10,6 +10,7 @@ import { MasterClock } from "./masterClock";
 import { SessionOrchestrator } from "./sessionOrchestrator";
 import { withRetries } from "./retry";
 import type { RuntimeSessionStateStore } from "./runtimeSessionStateStore";
+import type { RuntimeFrameEnvelope } from "./a2f-runtime/contracts";
 import type { A2FRuntimeClient } from "./a2f-runtime/runtimeServiceClient";
 
 type RuntimeState = "idle" | "starting" | "active" | "degraded" | "paused" | "stopped";
@@ -30,6 +31,8 @@ type RuntimeSession = {
   openai: OpenAiRealtimeOrchestrator;
   runpod: RunpodWorkerClient;
   engine?: AvatarRuntimeEngine;
+  /** Unsubscribe A2F facial tap used for `behavior_static` video modulation. */
+  facialFrameUnsub?: () => void;
 };
 
 type RealtimeEventInput = {
@@ -97,7 +100,8 @@ export class AvatarRuntimeSessionManager {
     await this.options.sessionState?.upsert(input.meetingId, {
       activeSpeaker: "assistant",
       phase: "starting",
-      engine: "echomimic",
+      engine:
+        this.isBehaviorStreamPipelineEnabled() ? "behavior_static" : this.isLegacyAvatarPipelineEnabled() ? "echomimic" : "none",
       degradationLevel: 0,
       avatarReady: false
     });
@@ -105,7 +109,7 @@ export class AvatarRuntimeSessionManager {
       this.numericToInternal.set(input.numericMeetingId, input.meetingId);
     }
 
-    if (!this.isLegacyAvatarPipelineEnabled()) {
+    if (!this.isLegacyAvatarPipelineEnabled() && !this.isBehaviorStreamPipelineEnabled()) {
       session.state = "active";
       this.touch(session);
       await this.options.sessionState?.upsert(input.meetingId, {
@@ -114,6 +118,69 @@ export class AvatarRuntimeSessionManager {
         degradationLevel: 0,
         avatarReady: false
       });
+      return;
+    }
+
+    if (this.isBehaviorStreamPipelineEnabled()) {
+      const facialFrameRef: { current: RuntimeFrameEnvelope | null } = { current: null };
+      let facialFrameUnsub: (() => void) | undefined;
+      if (env.A2F_RUNTIME_ENABLED && this.options.a2fRuntime) {
+        facialFrameUnsub = this.options.a2fRuntime.subscribe(input.meetingId, {
+          format: "json",
+          onFrame: (frame) => {
+            if (!(frame instanceof Uint8Array)) {
+              facialFrameRef.current = frame;
+            }
+          }
+        });
+      }
+      const engine = new AvatarRuntimeEngine({
+        orchestrator: openai,
+        publisher: new StreamAgentPublisher(),
+        runpod,
+        clock,
+        runtimeEvents: this.options.runtimeEvents,
+        facialFrameRef
+      });
+      session.engine = engine;
+      session.facialFrameUnsub = facialFrameUnsub;
+      try {
+        await engine.start({ meetingId: input.meetingId, sessionId, openAiAudioRateHz: 24_000 });
+        session.state = "active";
+        this.touch(session);
+        await this.options.sessionState?.upsert(input.meetingId, {
+          phase: "in_meeting",
+          engine: "behavior_static",
+          degradationLevel: 0,
+          avatarReady: true
+        });
+        await this.options.runtimeEvents?.append({
+          type: "avatar.runtime.started",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: { numericMeetingId: input.numericMeetingId, transport: "stream", renderer: "behavior_static" }
+        }).catch(() => undefined);
+      } catch (error) {
+        session.facialFrameUnsub?.();
+        session.facialFrameUnsub = undefined;
+        session.state = "degraded";
+        session.engine = undefined;
+        this.touch(session);
+        await this.options.sessionState?.upsert(input.meetingId, {
+          phase: "degraded",
+          degradationLevel: 2,
+          avatarReady: false
+        });
+        await this.options.runtimeEvents?.append({
+          type: "avatar.runtime.degraded",
+          meetingId: input.meetingId,
+          sessionId,
+          actor: "gateway",
+          payload: { reason: "behavior_static_engine_start_failed", error: error instanceof Error ? error.message : String(error) }
+        }).catch(() => undefined);
+        logger.warn({ meetingId: input.meetingId, err: error }, "behavior_static engine start failed");
+      }
       return;
     }
 
@@ -364,6 +431,8 @@ export class AvatarRuntimeSessionManager {
       avatarReady: false,
       degradationLevel: session.engine ? 0 : 2
     }).catch(() => undefined);
+    session.facialFrameUnsub?.();
+    session.facialFrameUnsub = undefined;
     session.engine?.stop();
     session.openai.close(session.meetingId);
     if (env.A2F_RUNTIME_ENABLED) {
@@ -531,6 +600,17 @@ export class AvatarRuntimeSessionManager {
 
   private isLegacyAvatarPipelineEnabled(): boolean {
     return env.AVATAR_ENABLED && env.AVATAR_VIDEO_ENABLED && env.VIDEO_MODEL === "echomimic";
+  }
+
+  /** Stream SFU agent video+audio without EchoMimic worker — uses `AvatarRuntimeEngine` + `StreamAgentPublisher` at static I420 cadence. */
+  private isBehaviorStreamPipelineEnabled(): boolean {
+    return (
+      env.AVATAR_ENABLED &&
+      env.AVATAR_VIDEO_ENABLED &&
+      env.VIDEO_MODEL === "behavior_static" &&
+      Boolean(env.STREAM_API_KEY?.trim()) &&
+      Boolean(env.STREAM_API_SECRET?.trim())
+    );
   }
 
   private resolveSession(meetingId: string | undefined): RuntimeSession | undefined {
