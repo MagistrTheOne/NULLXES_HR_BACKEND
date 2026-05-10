@@ -281,6 +281,35 @@ export function createRuntimeRouter(deps: {
     res.status(200).json({ stats });
   }));
 
+  router.get("/:meetingId/facial-stream", asyncHandler(async (req, res) => {
+    const meetingId = req.params.meetingId;
+    if (!deps.a2fRuntime) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ message: "A2F runtime is unavailable" }));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive"
+    });
+    res.write("retry: 2000\n\n");
+    const unsubscribe = deps.a2fRuntime.subscribe(meetingId, {
+      format: "json",
+      onFrame: (frame) => {
+        if (frame instanceof Uint8Array) {
+          return;
+        }
+        res.write("event: frame\n");
+        res.write(`data: ${JSON.stringify(frame)}\n\n`);
+      }
+    });
+    req.on("close", () => {
+      unsubscribe();
+      res.end();
+    });
+  }));
+
   router.get("/a2f/sessions", asyncHandler(async (_req, res) => {
     const sessions = deps.a2fRuntime?.listStats() ?? [];
     res.status(200).json({ sessions });
