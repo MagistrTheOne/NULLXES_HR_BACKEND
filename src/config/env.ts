@@ -110,7 +110,15 @@ const envSchema = z.object({
   AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),
   AVATAR_AUDIO_CHUNK_MAX_MS: z.coerce.number().int().min(20).max(40).default(40),
   AVATAR_AUDIO_QUEUE_BUDGET_MS: z.coerce.number().int().min(80).max(2_000).default(200),
+  ANAM_ENABLED: z.coerce.boolean().default(false),
   A2F_RUNTIME_ENABLED: z.coerce.boolean().default(true),
+  A2F_RUNTIME_TRANSPORT: z.enum(["inprocess", "gpu_pod"]).default("inprocess"),
+  A2F_GPU_RUNTIME_WS_URL: z.string().url().optional(),
+  A2F_GPU_RUNTIME_HEALTH_URL: z.string().url().optional(),
+  A2F_GPU_HEARTBEAT_MS: z.coerce.number().int().positive().default(5000),
+  A2F_GPU_RECONNECT_BASE_MS: z.coerce.number().int().positive().default(500),
+  A2F_GPU_RECONNECT_MAX_MS: z.coerce.number().int().positive().default(10000),
+  A2F_GPU_MAX_BUFFERED_CHUNKS: z.coerce.number().int().min(8).max(4096).default(128),
   A2F_RUNTIME_TARGET_FPS: z.coerce.number().int().min(10).max(120).default(30),
   A2F_RUNTIME_WINDOW_MS: z.coerce.number().int().min(20).max(120).default(40),
   A2F_RUNTIME_HOP_MS: z.coerce.number().int().min(10).max(80).default(20),
@@ -183,6 +191,14 @@ const envSchema = z.object({
         message: "STREAM_API_KEY and STREAM_API_SECRET are required when AVATAR_ENABLED=true (gateway forwards them to the pod)"
       });
     }
+  }
+
+  if (values.A2F_RUNTIME_TRANSPORT === "gpu_pod" && !values.A2F_GPU_RUNTIME_WS_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["A2F_GPU_RUNTIME_WS_URL"],
+      message: "A2F_GPU_RUNTIME_WS_URL is required when A2F_RUNTIME_TRANSPORT=gpu_pod"
+    });
   }
 });
 

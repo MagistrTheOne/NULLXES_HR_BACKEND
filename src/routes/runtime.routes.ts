@@ -285,7 +285,6 @@ export function createRuntimeRouter(deps: {
     const sessions = deps.a2fRuntime?.listStats() ?? [];
     res.status(200).json({ sessions });
   }));
-
   router.get("/:meetingId/state", asyncHandler(async (req, res) => {
     const state = await deps.sessionState?.get(req.params.meetingId);
     res.status(200).json({ state: state ?? null });

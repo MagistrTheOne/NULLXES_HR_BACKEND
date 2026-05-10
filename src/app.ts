@@ -55,7 +55,8 @@ import { WebhookDispatcher } from "./services/webhookDispatcher";
 import { WebhookOutbox } from "./services/webhookOutbox";
 import { A2FRuntimeService } from "./services/a2f-runtime/a2fRuntimeService";
 import { A2FFrameWsHub } from "./services/a2f-runtime/a2fFrameWsHub";
-import { InProcessA2FRuntimeClient } from "./services/a2f-runtime/runtimeServiceClient";
+import { InProcessA2FRuntimeClient, type A2FRuntimeClient } from "./services/a2f-runtime/runtimeServiceClient";
+import { GpuRuntimeClient } from "./services/a2f-runtime/transport/gpuRuntimeClient";
 
 export interface AppContext {
   app: express.Express;
@@ -98,8 +99,26 @@ export async function createApp(): Promise<AppContext> {
     prefix: env.REDIS_PREFIX,
     ttlMs: env.REDIS_SESSION_TTL_MS
   });
-  const a2fRuntimeService = new A2FRuntimeService();
-  const a2fRuntimeClient = new InProcessA2FRuntimeClient(a2fRuntimeService);
+  let a2fRuntimeClient: A2FRuntimeClient;
+  if (env.A2F_RUNTIME_TRANSPORT === "gpu_pod") {
+    a2fRuntimeClient = new GpuRuntimeClient({
+      wsBaseUrl: env.A2F_GPU_RUNTIME_WS_URL!,
+      podHealthcheckUrl: env.A2F_GPU_RUNTIME_HEALTH_URL,
+      heartbeatMs: env.A2F_GPU_HEARTBEAT_MS,
+      reconnectBaseMs: env.A2F_GPU_RECONNECT_BASE_MS,
+      reconnectMaxMs: env.A2F_GPU_RECONNECT_MAX_MS,
+      maxBufferedChunks: env.A2F_GPU_MAX_BUFFERED_CHUNKS
+    });
+    const gpuRuntimeClient = a2fRuntimeClient as GpuRuntimeClient;
+    const pollPodHealth = (): void => {
+      void gpuRuntimeClient.checkPodHealth();
+    };
+    pollPodHealth();
+    setInterval(pollPodHealth, 10_000).unref();
+  } else {
+    const a2fRuntimeService = new A2FRuntimeService();
+    a2fRuntimeClient = new InProcessA2FRuntimeClient(a2fRuntimeService);
+  }
   const a2fFrameWsHub = new A2FFrameWsHub(a2fRuntimeClient);
   const avatarRuntimeSessionManager = new AvatarRuntimeSessionManager({
     runtimeEvents,
@@ -191,7 +210,10 @@ export async function createApp(): Promise<AppContext> {
         sessionStore,
         webhookOutbox,
         redisReconnects: storage.redisReconnects,
-        a2fRuntimeStats: () => a2fRuntimeClient.listStats()
+        a2fRuntimeStats: () => a2fRuntimeClient.listStats(),
+        a2fRuntimeReconnects: () => (a2fRuntimeClient instanceof GpuRuntimeClient ? a2fRuntimeClient.getReconnectsTotal() : 0),
+        a2fRuntimeDroppedFrames: () => (a2fRuntimeClient instanceof GpuRuntimeClient ? a2fRuntimeClient.getDroppedFramesTotal() : 0),
+        a2fRuntimePodHealth: () => (a2fRuntimeClient instanceof GpuRuntimeClient ? a2fRuntimeClient.getPodHealthState() : 1)
       })
     : undefined;
 

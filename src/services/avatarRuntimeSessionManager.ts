@@ -498,6 +498,9 @@ export class AvatarRuntimeSessionManager {
   }
 
   private async checkProductionReadiness(runpod: RunpodWorkerClient): Promise<{ ok: boolean; reason?: string; detail?: unknown }> {
+    if (env.A2F_RUNTIME_ENABLED) {
+      return { ok: true };
+    }
     if (!env.AVATAR_VIDEO_ENABLED || env.VIDEO_MODEL !== "echomimic") {
       return { ok: false, reason: "echomimic_disabled" };
     }
@@ -591,7 +594,6 @@ export class AvatarRuntimeSessionManager {
   private touch(session: RuntimeSession): void {
     session.updatedAtMs = Date.now();
   }
-
   private downsampleTo16k(samples: Int16Array, srcRateHz: number): Int16Array {
     if (srcRateHz <= 16_000) {
       return samples;

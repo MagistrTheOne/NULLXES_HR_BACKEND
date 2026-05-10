@@ -15,6 +15,9 @@ interface MetricsDeps {
   sessionStore: InMemorySessionStore;
   webhookOutbox: WebhookOutbox;
   redisReconnects: () => number;
+  a2fRuntimeReconnects?: () => number;
+  a2fRuntimeDroppedFrames?: () => number;
+  a2fRuntimePodHealth?: () => number;
   a2fRuntimeStats?: () => Array<{
     fps: number;
     queueDepthMs: number;
@@ -118,6 +121,33 @@ export function createMetricsContext(deps: MetricsDeps): MetricsContext {
     }
   });
 
+  const a2fRuntimeReconnects = new Gauge({
+    name: "gateway_a2f_runtime_reconnects_total",
+    help: "Total reconnects performed by GPU runtime transport",
+    registers: [registry],
+    collect() {
+      this.set(deps.a2fRuntimeReconnects?.() ?? 0);
+    }
+  });
+
+  const a2fRuntimeDroppedFrames = new Gauge({
+    name: "gateway_a2f_runtime_dropped_frames_total",
+    help: "Total dropped frames in GPU runtime transport",
+    registers: [registry],
+    collect() {
+      this.set(deps.a2fRuntimeDroppedFrames?.() ?? 0);
+    }
+  });
+
+  const a2fRuntimePodHealth = new Gauge({
+    name: "gateway_a2f_runtime_pod_health",
+    help: "GPU runtime pod health state (1 healthy, 0 unhealthy)",
+    registers: [registry],
+    collect() {
+      this.set(deps.a2fRuntimePodHealth?.() ?? 1);
+    }
+  });
+
   // Bridge poll: каждые 10s synchronize external counter с prom-counter.
   let lastReported = 0;
   setInterval(() => {
@@ -134,6 +164,9 @@ export function createMetricsContext(deps: MetricsDeps): MetricsContext {
   void a2fRuntimeFps;
   void a2fRuntimeQueueDepthMs;
   void a2fRuntimeLatencyP95Ms;
+  void a2fRuntimeReconnects;
+  void a2fRuntimeDroppedFrames;
+  void a2fRuntimePodHealth;
 
   const middleware = (req: Request, res: Response, next: NextFunction): void => {
     const startNs = process.hrtime.bigint();
