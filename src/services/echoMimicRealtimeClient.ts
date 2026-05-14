@@ -168,7 +168,8 @@ export class EchoMimicRealtimeClient {
           refImagePath: input.refImagePath,
           width: input.width,
           height: input.height,
-          targetFps: input.targetFps
+          targetFps: input.targetFps,
+          fps: input.targetFps
         };
         if (token) {
           hello.authToken = token;
@@ -221,12 +222,26 @@ export class EchoMimicRealtimeClient {
       return;
     }
     const type = msg.type;
-    if (type === "frame" && typeof msg.i420Base64 === "string") {
+    if (type === "frame") {
+      const fmt = typeof msg.format === "string" ? String(msg.format).toLowerCase() : "";
+      const b64Raw =
+        typeof msg.data === "string"
+          ? msg.data
+          : typeof msg.i420Base64 === "string"
+            ? msg.i420Base64
+            : null;
+      if (!b64Raw) return;
+      if (fmt && fmt !== "i420") {
+        logger.warn({ format: fmt }, "echomimic_realtime_frame_unsupported_format");
+        return;
+      }
       const width = Number(msg.width ?? 512);
       const height = Number(msg.height ?? 512);
-      const ptsMs = Number(msg.ptsMs ?? Date.now());
+      const ptsMs = Number(
+        msg.ptsMs ?? msg.timestampMs ?? msg.timestamp ?? Date.now()
+      );
       try {
-        const i420 = Buffer.from(msg.i420Base64, "base64");
+        const i420 = Buffer.from(b64Raw, "base64");
         const expected = Math.floor((width * height * 3) / 2);
         if (i420.length === expected) {
           this.lastFrame = { ptsMs, width, height, i420 };
@@ -277,8 +292,11 @@ export class EchoMimicRealtimeClient {
       this.ws.send(
         JSON.stringify({
           type: "ingest",
+          timestamp: payload.timestampMs,
           timestampMs: payload.timestampMs,
+          sampleRate: payload.sampleRateHz,
           sampleRateHz: payload.sampleRateHz,
+          pcm: payload.pcm16Base64,
           pcm16Base64: payload.pcm16Base64,
           a2f: payload.a2f
         })

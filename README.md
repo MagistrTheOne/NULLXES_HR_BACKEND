@@ -53,6 +53,10 @@ backend/realtime-gateway
   - Marks session closed.
 - `POST /meetings/start`
   - Creates meeting context and transitions `pending -> starting -> in_meeting`.
+  - **Integrator JSON:** `{ "meetingId": "<canonical id>", "triggerSource?": "…", "metadata?": {}, "sessionId?": "…" }`. Deprecated field name: `internalMeetingId` (same meaning as `meetingId`). `triggerSource` is optional (stored as `unspecified` when omitted).
+  - **JobAI control** (body has numeric `meetingId` + bearer `meetingControlKey`): `{ "meetingId": <number>, "agentRTMPURL?": "rtmps://…" }`. Response: `{ ok, meetingId: "nullxes-meeting-…", numericMeetingId, status }`.
+- `POST /meetings/stop`
+  - JobAI control: same bearer; body `{ "meetingId": <number> | "nullxes-meeting-<id>", "stopReason": "candidate_leaved" | "candidate_stopped_ui" }`. Response: `{ ok, meetingId: "nullxes-meeting-…", numericMeetingId, status, stopReason }`.
 - `POST /meetings/:meetingId/stop`
   - Stops meeting with terminal state: `stopped_during_meeting` or `completed`.
 - `POST /meetings/:meetingId/fail`
@@ -115,7 +119,7 @@ State machine:
 Each transition:
 - is validated by `MeetingStateMachine`
 - is written to in-memory meeting history
-- produces webhook outbox event `meeting.status.changed`
+- produces webhook outbox event `meeting.status.changed` with **`meetingId`** (canonical string) and optional snake_case **`meeting_id`** mirror; legacy field name `internalMeetingId` removed from webhook JSON.
 
 When meeting reaches `completed`, `PostMeetingProcessor` emits additional event:
 - `meeting.post_processing.completed`
@@ -206,7 +210,7 @@ Meeting start:
 curl -i \
   -X POST "http://localhost:8080/meetings/start" \
   -H "Content-Type: application/json" \
-  -d '{"internalMeetingId":"meeting-001","triggerSource":"scheduler","metadata":{"candidateId":"cand-1"}}'
+  -d '{"meetingId":"meeting-001","metadata":{"candidateId":"cand-1"}}'
 ```
 
 Meeting fail:

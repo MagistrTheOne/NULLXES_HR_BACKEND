@@ -16,7 +16,7 @@ Worker SHOULD expose at least one of:
 
 | Method | Path | Response |
 |--------|------|----------|
-| GET | `/realtime/v1/health` | `{ "ok": true, "model": "echomimic-realtime" }` |
+| GET | `/realtime/v1/health` | `{ "ok": true, "service": "echomimic-flash-worker", "model": "echomimic-realtime-mvp", "realtime": true, "cuda": … }` |
 | GET | `/health` | existing worker health (gateway probes this as fallback) |
 
 Gateway `GET /avatar/health` reports `echomimicRealtimeReachable` using the same probe order.
@@ -58,9 +58,12 @@ After connect, client → server messages are **JSON text** (UTF-8), one object 
   "width": 512,
   "height": 512,
   "targetFps": 20,
+  "fps": 20,
   "authToken": "optional-same-as-bearer"
 }
 ```
+
+`fps` is an optional alias of `targetFps` (worker uses the same cap).
 
 Server → client after acceptance:
 
@@ -77,6 +80,8 @@ or
 ### 2) `ingest` (multiplex PCM + optional A2F envelope)
 
 Send for each gateway audio chunk (PCM16 LE, same timeline as OpenAI TTS):
+
+Aliases accepted by worker (same semantics): `timestamp` / `timestampMs`; `pcm` / `pcm16Base64`; `sampleRate` / `sampleRateHz`.
 
 ```json
 {
@@ -99,15 +104,21 @@ Send for each gateway audio chunk (PCM16 LE, same timeline as OpenAI TTS):
 
 ### 3) Server → client `frame` (low latency)
 
+Canonical (preferred):
+
 ```json
 {
   "type": "frame",
+  "timestamp": 1730000000123,
   "ptsMs": 1730000000123,
   "width": 512,
   "height": 512,
-  "i420Base64": "<base64 strict I420 size w*h*3/2>"
+  "format": "i420",
+  "data": "<base64 strict I420 size w*h*3/2>"
 }
 ```
+
+Legacy alias (still accepted by gateway): `i420Base64` instead of `data` (omit `format` or set `"format":"i420"`).
 
 Gateway **holds the latest** frame until a newer one arrives; publish cadence follows gateway `AvatarRuntimeEngine` FPS (repeat last frame if worker is slower).
 

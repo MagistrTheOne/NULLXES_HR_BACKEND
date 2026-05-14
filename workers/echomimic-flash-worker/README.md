@@ -1,11 +1,14 @@
 # EchoMimicV3 Flash RunPod worker (inference-only)
 
-This worker is **inference-only** and exposes:
+This worker is **inference-only** for batch clips, plus an **MVP realtime** path for end-to-end wiring:
 
 - `GET /health`
 - `POST /generate_clip`
+- `GET /realtime/v1/health`
+- `POST /realtime/v1/session` (optional bootstrap; returns `{ "ok": true }`)
+- `WebSocket /realtime/v1/ws` — JSON `hello` then `ingest` (PCM16 + optional A2F); server streams I420 `frame` messages (see [`../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md)).
 
-Phase **5A** realtime (8889 WebSocket + `/realtime/v1/*`) is specified in the gateway repo: [`../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](../../docs/ECHOMIMIC-8889-REALTIME-WIRE.md) — implement there when the GPU service should stream I420 back to the gateway (this Python app does not yet include those routes).
+Realtime frames today are **MVP**: resized Luna + audio RMS + A2F jaw hint → valid I420 (not full EchoMimic neural streaming yet). Replace the body of `realtime_frame.build_i420_frame` when a streaming infer API is available.
 
 It **does not** run Stream SDK or WebRTC.
 

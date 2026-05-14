@@ -82,8 +82,8 @@ export class InMemoryMeetingStore {
   createMeeting(input: StartMeetingInput): MeetingRecord {
     const now = Date.now();
     const record: MeetingRecord = {
-      meetingId: input.internalMeetingId,
-      triggerSource: input.triggerSource,
+      meetingId: input.meetingId,
+      triggerSource: input.triggerSource?.trim() ? input.triggerSource.trim() : "unspecified",
       status: "pending",
       createdAt: now,
       updatedAt: now,

@@ -13,27 +13,70 @@ import type { AvatarRuntimeSessionManager } from "../services/avatarRuntimeSessi
 import type { FailMeetingInput, MeetingRecord, StartMeetingInput, StopMeetingInput } from "../types/meeting";
 import type { JobAiInterviewStatus, StoredInterview } from "../types/interview";
 
-const startMeetingSchema = z.object({
-  internalMeetingId: z.string().min(1),
-  triggerSource: z.string().min(1),
-  metadata: z.record(z.unknown()).optional(),
-  sessionId: z.string().min(1).optional()
-});
+/** Legacy POST /meetings/start body: `meetingId` (preferred) or deprecated `internalMeetingId`; `triggerSource` optional. */
+const startMeetingSchema = z
+  .object({
+    meetingId: z.string().min(1).optional(),
+    internalMeetingId: z.string().min(1).optional(),
+    triggerSource: z.string().min(1).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    sessionId: z.string().min(1).optional()
+  })
+  .superRefine((data, ctx) => {
+    const id = (data.meetingId ?? data.internalMeetingId)?.trim();
+    if (!id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "meetingId is required (string). Legacy alias: internalMeetingId",
+        path: ["meetingId"]
+      });
+    }
+  })
+  .transform((data): StartMeetingInput => {
+    const meetingId = (data.meetingId ?? data.internalMeetingId)!.trim();
+    return {
+      meetingId,
+      triggerSource: data.triggerSource,
+      metadata: data.metadata,
+      sessionId: data.sessionId
+    };
+  });
 
 const controlStartMeetingSchema = z.object({
   meetingId: z.number().int().positive(),
-  agentRTMPURL: z.string().min(1)
+  agentRTMPURL: z.string().min(1).optional()
 });
+
+function normalizeControlStopMeetingBody(body: unknown): unknown {
+  if (!body || typeof body !== "object") {
+    return body;
+  }
+  const o = { ...(body as Record<string, unknown>) };
+  const mid = o.meetingId;
+  if (typeof mid === "string") {
+    const s = mid.trim();
+    const m = /^nullxes-meeting-(\d+)$/.exec(s);
+    if (m) {
+      o.meetingId = Number(m[1]);
+    } else if (/^\d+$/.test(s)) {
+      o.meetingId = Number(s);
+    }
+  }
+  return o;
+}
+
+const controlStopMeetingSchema = z.preprocess(
+  normalizeControlStopMeetingBody,
+  z.object({
+    meetingId: z.number().int().positive(),
+    stopReason: z.enum(["candidate_leaved", "candidate_stopped_ui"])
+  })
+);
 
 const stopMeetingSchema = z.object({
   reason: z.enum(["manual_stop", "superseded_by_other_meeting", "error"]),
   finalStatus: z.enum(["stopped_during_meeting", "completed"]).optional(),
   metadata: z.record(z.unknown()).optional()
-});
-
-const controlStopMeetingSchema = z.object({
-  meetingId: z.number().int().positive(),
-  stopReason: z.enum(["candidate_leaved", "candidate_stopped_ui"])
 });
 
 const failMeetingSchema = z.object({
@@ -100,7 +143,7 @@ function asyncHandler(
   };
 }
 
-function parseBody<T>(schema: z.ZodSchema<T>, body: unknown): T {
+function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     throw new HttpError(400, "Invalid request payload", parsed.error.flatten());
@@ -227,10 +270,9 @@ export function createMeetingRouter(
         return;
       }
 
-      const metadata = {
+      const metadata: Record<string, unknown> = {
         numericMeetingId: input.meetingId,
         jobAiId: stored.jobAiId,
-        agentRTMPURL: input.agentRTMPURL,
         source: "nullxes_control_api",
         interviewContext: {
           jobTitle: stored.rawPayload.jobTitle,
@@ -240,9 +282,13 @@ export function createMeetingRouter(
           questions: stored.rawPayload.specialty?.questions ?? []
         }
       };
+      const rtmp = typeof input.agentRTMPURL === "string" ? input.agentRTMPURL.trim() : "";
+      if (rtmp.length > 0) {
+        metadata.agentRTMPURL = rtmp;
+      }
 
       const result = orchestrator.startMeeting({
-        internalMeetingId: internalId,
+        meetingId: internalId,
         triggerSource: "nullxes_control_api",
         metadata
       });
@@ -271,18 +317,21 @@ export function createMeetingRouter(
         meetingId: internalId,
         jobAiId: stored.jobAiId,
         actor: "nullxes_control_api",
-        payload: { numericMeetingId: input.meetingId, agentRTMPURL: input.agentRTMPURL }
+        payload: {
+          numericMeetingId: input.meetingId,
+          ...(rtmp.length > 0 ? { agentRTMPURL: rtmp } : {})
+        }
       }).catch(() => undefined);
       res.status(201).json({
         ok: true,
-        meetingId: input.meetingId,
-        internalMeetingId: internalId,
+        meetingId: internalId,
+        numericMeetingId: input.meetingId,
         status: result.meeting.status
       });
       return;
     }
 
-    const input = parseBody<StartMeetingInput>(startMeetingSchema, req.body);
+    const input = parseBody(startMeetingSchema, req.body);
     const metadata = (input.metadata ?? {}) as Record<string, unknown>;
     const interviewContext = (metadata.interviewContext ?? {}) as Record<string, unknown>;
     const contextProbe = {
@@ -295,7 +344,7 @@ export function createMeetingRouter(
     logger.info(
       {
         requestId: req.requestId,
-        internalMeetingId: input.internalMeetingId,
+        meetingId: input.meetingId,
         triggerSource: input.triggerSource,
         contextProbe
       },
@@ -304,13 +353,13 @@ export function createMeetingRouter(
 
     const result = orchestrator.startMeeting(input);
     void deps?.avatarRuntime?.startForMeeting({
-      meetingId: input.internalMeetingId,
-      sessionId: input.sessionId ?? input.internalMeetingId,
+      meetingId: input.meetingId,
+      sessionId: input.sessionId ?? input.meetingId,
       numericMeetingId:
         typeof input.metadata?.numericMeetingId === "number" ? input.metadata.numericMeetingId : undefined
     }).catch((error: unknown) => {
       logger.warn(
-        { meetingId: input.internalMeetingId, error: error instanceof Error ? error.message : String(error) },
+        { meetingId: input.meetingId, error: error instanceof Error ? error.message : String(error) },
         "avatar runtime start failed after meeting start"
       );
     });
@@ -379,8 +428,8 @@ export function createMeetingRouter(
     deps.controlWsHub?.closeMeeting(input.meetingId, "meeting_stopped");
     res.status(200).json({
       ok: true,
-      meetingId: input.meetingId,
-      internalMeetingId: internalId,
+      meetingId: internalId,
+      numericMeetingId: input.meetingId,
       status: result.meeting.status,
       stopReason: input.stopReason
     });

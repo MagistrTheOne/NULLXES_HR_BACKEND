@@ -55,14 +55,14 @@ export class MeetingOrchestrator {
   }
 
   startMeeting(input: StartMeetingInput): { meeting: MeetingRecord; history: MeetingTransitionEvent[] } {
-    if (this.store.exists(input.internalMeetingId)) {
-      throw new HttpError(409, `Meeting already exists: ${input.internalMeetingId}`);
+    if (this.store.exists(input.meetingId)) {
+      throw new HttpError(409, `Meeting already exists: ${input.meetingId}`);
     }
 
     this.store.createMeeting(input);
-    this.transition(input.internalMeetingId, "starting", "meeting_start_requested", input.metadata, input.sessionId);
-    this.transition(input.internalMeetingId, "in_meeting", "meeting_started", input.metadata, input.sessionId);
-    const meeting = this.requireMeeting(input.internalMeetingId);
+    this.transition(input.meetingId, "starting", "meeting_start_requested", input.metadata, input.sessionId);
+    this.transition(input.meetingId, "in_meeting", "meeting_started", input.metadata, input.sessionId);
+    const meeting = this.requireMeeting(input.meetingId);
 
     // Fire-and-forget avatar pod kickoff. We never await this — the meeting
     // is considered started even if the GPU pod is slow / down. The pod will
@@ -571,7 +571,7 @@ export class MeetingOrchestrator {
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
-      internalMeetingId: transition.meetingId,
+      meetingId: transition.meetingId,
       meeting_id: transition.meetingId,
       sessionId: transition.sessionId,
       fromStatus: transition.fromStatus,
@@ -591,7 +591,7 @@ export class MeetingOrchestrator {
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
-      internalMeetingId: meetingId,
+      meetingId,
       meeting_id: meetingId,
       sessionId: meeting.sessionId,
       fromStatus: meeting.status,
@@ -606,7 +606,7 @@ export class MeetingOrchestrator {
 
   private buildIdempotencyKey(payload: MeetingWebhookEvent): string {
     const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-    return `${payload.internalMeetingId}:${payload.eventType}:${hash.slice(0, 16)}`;
+    return `${payload.meetingId}:${payload.eventType}:${hash.slice(0, 16)}`;
   }
 
   private requireMeeting(meetingId: string): MeetingRecord {

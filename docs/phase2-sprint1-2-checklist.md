@@ -14,7 +14,7 @@
 - [ ] Trigger assistant response (audio delta flow).
 - [ ] Run:
   - `node scripts/phase2-sprint1-2-smoke.mjs`
-  - `MEETING_ID=<internalMeetingId> node scripts/phase2-sprint1-2-smoke.mjs`
+  - `MEETING_ID=<canonical meeting id, e.g. nullxes-meeting-123> node scripts/phase2-sprint1-2-smoke.mjs`
 - [ ] Verify `/runtime/:meetingId/avatar-stats` returns:
   - [ ] `orchestrator.activeSpeaker`
   - [ ] `orchestrator.duplexMode`

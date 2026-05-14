@@ -1,16 +1,25 @@
+import asyncio
 import base64
+import json
 import os
 import tempfile
 import time
 import wave
 from typing import Optional, Literal, Dict, Any
 
-from fastapi import FastAPI, HTTPException
+import subprocess
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from echomimic_runner import EchoMimicFlashConfig, run_infer_flash
+from realtime_frame import (
+    build_i420_frame,
+    frame_packet_json,
+    jaw_open_from_a2f,
+    load_ref_bgr,
+    pcm16_rms_normalized,
+)
 from video_decode import mp4_to_i420_frames, decode_pcm16_base64_to_bytes
-import subprocess
 
 app = FastAPI(title="NULLXES EchoMimicV3 Flash Worker", version="1.0.0")
 
@@ -68,15 +77,149 @@ _cfg = EchoMimicFlashConfig()
 _queue_depth = 0
 
 
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+def _cuda_available() -> bool:
     try:
         import torch  # type: ignore
 
-        cuda = bool(torch.cuda.is_available())
+        return bool(torch.cuda.is_available())
     except Exception:
-        cuda = False
-    return HealthResponse(ok=True, model="echomimicv3-flash", cuda=cuda)
+        return False
+
+
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse(ok=True, model="echomimicv3-flash", cuda=_cuda_available())
+
+
+@app.get("/realtime/v1/health")
+def realtime_v1_health() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "service": "echomimic-flash-worker",
+        "model": "echomimic-realtime-mvp",
+        "realtime": True,
+        "cuda": _cuda_available(),
+    }
+
+
+@app.post("/realtime/v1/session")
+async def realtime_v1_session(request: Request) -> Dict[str, Any]:
+    try:
+        await request.json()
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.websocket("/realtime/v1/ws")
+async def realtime_v1_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+    ref_bgr = None
+    width, height = 512, 512
+    fps = 24
+    min_interval = 1.0 / max(1, fps)
+    last_sent_mono = 0.0
+    loop = asyncio.get_event_loop()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "message": "invalid_json"})
+                continue
+
+            mtype = msg.get("type")
+            if mtype == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
+            if mtype == "hello":
+                sid = str(msg.get("sessionId", ""))
+                ref_path = msg.get("refImagePath") or os.environ.get(
+                    "DEFAULT_REF_IMAGE", os.path.join(_cfg.repo_dir, "nullxes_refs/ref.jpg")
+                )
+                if not ref_path or not os.path.isfile(str(ref_path)):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "ref_image_not_found",
+                            "refImagePath": ref_path,
+                        }
+                    )
+                    continue
+                width = int(msg.get("width", 512))
+                height = int(msg.get("height", 512))
+                width = max(64, min(1024, width))
+                height = max(64, min(1024, height))
+                fps = int(msg.get("fps") or msg.get("targetFps") or 24)
+                fps = max(1, min(60, fps))
+                min_interval = 1.0 / fps
+
+                def _load_ref() -> Any:
+                    return load_ref_bgr(str(ref_path))
+
+                ref_bgr = await loop.run_in_executor(None, _load_ref)
+                await websocket.send_json(
+                    {
+                        "type": "ready",
+                        "sessionId": sid,
+                        "width": width,
+                        "height": height,
+                        "fps": fps,
+                    }
+                )
+                continue
+
+            if mtype == "ingest":
+                if ref_bgr is None:
+                    await websocket.send_json({"type": "error", "message": "hello_required"})
+                    continue
+
+                ts = msg.get("timestampMs")
+                if ts is None:
+                    ts = msg.get("timestamp")
+                ts_ms = int(ts) if ts is not None else int(time.time() * 1000)
+
+                pcm_b64 = msg.get("pcm16Base64") or msg.get("pcm")
+                if not pcm_b64 or not isinstance(pcm_b64, str):
+                    continue
+                try:
+                    pcm_bytes = base64.b64decode(pcm_b64.encode("ascii"))
+                except Exception:
+                    await websocket.send_json({"type": "error", "message": "pcm_decode_failed"})
+                    continue
+
+                sr = msg.get("sampleRateHz") or msg.get("sampleRate") or 24000
+                _ = sr  # reserved for true streaming infer
+
+                a2f_raw = msg.get("a2f")
+                a2f: Optional[Dict[str, Any]] = a2f_raw if isinstance(a2f_raw, dict) else None
+
+                now = time.monotonic()
+                if now - last_sent_mono < min_interval:
+                    continue
+                last_sent_mono = now
+
+                rms = pcm16_rms_normalized(pcm_bytes)
+                jaw = jaw_open_from_a2f(a2f)
+
+                def _build() -> bytes:
+                    return build_i420_frame(ref_bgr, width, height, jaw, rms)
+
+                i420 = await loop.run_in_executor(None, _build)
+                await websocket.send_json(frame_packet_json(ts_ms, width, height, i420))
+                continue
+
+            await websocket.send_json({"type": "error", "message": f"unknown_type:{mtype}"})
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 def _write_wav_pcm16(path: str, pcm16_bytes: bytes, sample_rate: int) -> None:

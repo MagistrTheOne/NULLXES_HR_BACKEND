@@ -50,8 +50,10 @@ export interface MeetingRecord {
 }
 
 export interface StartMeetingInput {
-  internalMeetingId: string;
-  triggerSource: string;
+  /** Canonical NULLXES meeting id (e.g. `nullxes-meeting-540995855` or custom slug from scheduler). */
+  meetingId: string;
+  /** Optional; defaults to `"unspecified"` when omitted. */
+  triggerSource?: string;
   metadata?: Record<string, unknown>;
   sessionId?: string;
 }
@@ -72,7 +74,8 @@ export interface FailMeetingInput {
 export interface MeetingStatusWebhookPayload {
   eventType: "meeting.status.changed";
   schemaVersion: string;
-  internalMeetingId: string;
+  meetingId: string;
+  /** @deprecated Same as `meetingId`; kept for older JobAI parsers. */
   meeting_id?: string;
   sessionId?: string;
   fromStatus: MeetingStatus | null;
@@ -91,7 +94,7 @@ export interface MeetingStatusWebhookPayload {
 export interface MeetingPostProcessingPayload {
   eventType: "meeting.post_processing.completed";
   schemaVersion: string;
-  internalMeetingId: string;
+  meetingId: string;
   sessionId?: string;
   timestampMs: number;
   summary: string;
