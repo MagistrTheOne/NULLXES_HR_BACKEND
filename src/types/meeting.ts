@@ -74,8 +74,8 @@ export interface FailMeetingInput {
 export interface MeetingStatusWebhookPayload {
   eventType: "meeting.status.changed";
   schemaVersion: string;
-  meetingId: string;
-  /** @deprecated Same as `meetingId`; kept for older JobAI parsers. */
+  /** JobAI contract: canonical NULLXES meeting id (unchanged field name for downstream parsers). */
+  internalMeetingId: string;
   meeting_id?: string;
   sessionId?: string;
   fromStatus: MeetingStatus | null;
@@ -94,7 +94,7 @@ export interface MeetingStatusWebhookPayload {
 export interface MeetingPostProcessingPayload {
   eventType: "meeting.post_processing.completed";
   schemaVersion: string;
-  meetingId: string;
+  internalMeetingId: string;
   sessionId?: string;
   timestampMs: number;
   summary: string;

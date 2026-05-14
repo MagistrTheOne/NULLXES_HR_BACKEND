@@ -119,7 +119,7 @@ State machine:
 Each transition:
 - is validated by `MeetingStateMachine`
 - is written to in-memory meeting history
-- produces webhook outbox event `meeting.status.changed` with **`meetingId`** (canonical string) and optional snake_case **`meeting_id`** mirror; legacy field name `internalMeetingId` removed from webhook JSON.
+- produces webhook outbox event `meeting.status.changed` (JobAI JSON uses **`internalMeetingId`** + optional **`meeting_id`** mirror).
 
 When meeting reaches `completed`, `PostMeetingProcessor` emits additional event:
 - `meeting.post_processing.completed`

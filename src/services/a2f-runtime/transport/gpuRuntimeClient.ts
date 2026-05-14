@@ -43,7 +43,10 @@ type GpuSession = {
     outputQueueDepth: number;
     lastFrameAtMs: number;
   };
-  frameTimestamps: number[];
+  /** Recent per-frame latency samples (ms) for avg / p95; separate from FPS window. */
+  latencySamples: number[];
+  /** Wall-clock ms of frame arrivals in the last ~5s sliding window for FPS. */
+  fpsArrivalTimesMs: number[];
 };
 
 type OutboundMessage =
@@ -104,7 +107,8 @@ export class GpuRuntimeClient implements A2FRuntimeClient {
         outputQueueDepth: 0,
         lastFrameAtMs: 0
       },
-      frameTimestamps: []
+      latencySamples: [],
+      fpsArrivalTimesMs: []
     };
     this.sessions.set(config.meetingId, session);
     this.connectSession(session);
@@ -410,7 +414,7 @@ export class GpuRuntimeClient implements A2FRuntimeClient {
     const prevAvg = session.stats.avgLatencyMs;
     const n = session.stats.totalFrames;
     session.stats.avgLatencyMs = prevAvg + (latencyMs - prevAvg) / Math.max(1, n);
-    const list = session.frameTimestamps;
+    const list = session.latencySamples;
     list.push(latencyMs);
     if (list.length > 256) {
       list.splice(0, list.length - 256);
@@ -422,10 +426,11 @@ export class GpuRuntimeClient implements A2FRuntimeClient {
 
   private updateFps(session: GpuSession): void {
     const now = Date.now();
-    session.frameTimestamps.push(now);
-    while (session.frameTimestamps.length > 0 && now - (session.frameTimestamps[0] ?? now) > 5000) {
-      session.frameTimestamps.shift();
+    const arrivals = session.fpsArrivalTimesMs;
+    arrivals.push(now);
+    while (arrivals.length > 0 && now - (arrivals[0] ?? now) > 5000) {
+      arrivals.shift();
     }
-    session.stats.fps = Number((session.frameTimestamps.length / 5).toFixed(2));
+    session.stats.fps = Number((arrivals.length / 5).toFixed(2));
   }
 }

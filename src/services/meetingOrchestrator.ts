@@ -571,7 +571,7 @@ export class MeetingOrchestrator {
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
-      meetingId: transition.meetingId,
+      internalMeetingId: transition.meetingId,
       meeting_id: transition.meetingId,
       sessionId: transition.sessionId,
       fromStatus: transition.fromStatus,
@@ -591,7 +591,7 @@ export class MeetingOrchestrator {
     const payload: MeetingWebhookEvent = {
       eventType: "meeting.status.changed",
       schemaVersion: "1.0",
-      meetingId,
+      internalMeetingId: meetingId,
       meeting_id: meetingId,
       sessionId: meeting.sessionId,
       fromStatus: meeting.status,
@@ -606,7 +606,7 @@ export class MeetingOrchestrator {
 
   private buildIdempotencyKey(payload: MeetingWebhookEvent): string {
     const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-    return `${payload.meetingId}:${payload.eventType}:${hash.slice(0, 16)}`;
+    return `${payload.internalMeetingId}:${payload.eventType}:${hash.slice(0, 16)}`;
   }
 
   private requireMeeting(meetingId: string): MeetingRecord {

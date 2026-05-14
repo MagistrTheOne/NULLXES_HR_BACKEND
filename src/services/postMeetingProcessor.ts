@@ -40,7 +40,7 @@ export class PostMeetingProcessor {
     const payload: MeetingPostProcessingPayload = {
       eventType: "meeting.post_processing.completed",
       schemaVersion: meeting.schemaVersion,
-      meetingId: meeting.meetingId,
+      internalMeetingId: meeting.meetingId,
       sessionId: meeting.sessionId,
       timestampMs: Date.now(),
       summary: "Meeting completed. Post-processing artifact package queued.",

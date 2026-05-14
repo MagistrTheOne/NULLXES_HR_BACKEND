@@ -84,7 +84,7 @@ export class WebhookDispatcher {
         logger.info(
           {
             idempotencyKey: item.idempotencyKey,
-            meetingId: item.event.meetingId,
+            meetingId: item.event.internalMeetingId,
             responseStatus: response.status
           },
           "webhook delivered"
@@ -101,7 +101,7 @@ export class WebhookDispatcher {
         logger.error(
           {
             idempotencyKey: item.idempotencyKey,
-            meetingId: item.event.meetingId,
+            meetingId: item.event.internalMeetingId,
             responseStatus: response.status
           },
           "webhook terminal failure"
@@ -128,7 +128,7 @@ export class WebhookDispatcher {
       logger.warn(
         {
           idempotencyKey: item.idempotencyKey,
-          meetingId: item.event.meetingId,
+          meetingId: item.event.internalMeetingId,
           responseStatus: response.status,
           retryDelayMs
         },
