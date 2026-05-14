@@ -100,7 +100,7 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
           : undefined;
 
       const telemetryPatch: {
-        videoModel?: "wan" | "ltx" | "echomimic";
+        videoModel?: "wan" | "ltx" | "arachne" | "arachne_ultra_avatar" | "arachne_ultra_video";
         clipLatencyMs?: number;
         bufferSeconds?: number;
         droppedFrames?: number;
@@ -111,8 +111,12 @@ export function createAvatarRouter(deps: AvatarRouterDeps): express.Router {
         event.type === "telemetry" || event.type === "engine_degraded" || event.type === "speaker_changed" || event.type === "avatar_ready"
           ? {
               videoModel:
-                event.data?.model === "echomimic"
-                  ? "echomimic"
+                event.data?.model === "arachne"
+                  ? "arachne"
+                  : event.data?.model === "arachne_ultra_avatar"
+                    ? "arachne_ultra_avatar"
+                    : event.data?.model === "arachne_ultra_video"
+                      ? "arachne_ultra_video"
                   : event.data?.model === "ltx"
                     ? "ltx"
                     : event.data?.model === "wan"

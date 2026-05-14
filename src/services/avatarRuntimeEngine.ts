@@ -1,4 +1,4 @@
-import { env } from "../config/env";
+import { env, resolveRuntimeVideoEngine } from "../config/env";
 import { logger } from "../logging/logger";
 import type { RuntimeEventStore } from "./runtimeEventStore";
 import { MicRingBuffer, TtsRingBuffer } from "./audioRingBuffer";
@@ -10,7 +10,8 @@ import { withRetries } from "./retry";
 import { createStaticI420Frame } from "./staticI420Frame";
 import type { MasterClock } from "./masterClock";
 import type { RuntimeFrameEnvelope } from "./a2f-runtime/contracts";
-import { EchoMimicRealtimeClient } from "./echoMimicRealtimeClient";
+import { ArachneAvatarFramesClient } from "./arachneAvatarFramesClient";
+import { resamplePcm16Linear } from "./audioResampler";
 
 function base64FromBytes(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
@@ -59,7 +60,8 @@ export class AvatarRuntimeEngine {
   private chunkViolationCount = 0;
   private lastChunkSizeMs = 0;
   private readonly facialFrameRef?: { current: RuntimeFrameEnvelope | null };
-  private readonly echoRealtime: EchoMimicRealtimeClient | null;
+  private readonly arachneFrames: ArachneAvatarFramesClient;
+  private referenceImageBase64: string | null = null;
 
   constructor(input: {
     orchestrator: OpenAiRealtimeOrchestrator;
@@ -80,7 +82,7 @@ export class AvatarRuntimeEngine {
     this.clock = input.clock;
     this.runtimeEvents = input.runtimeEvents;
     this.facialFrameRef = input.facialFrameRef;
-    this.echoRealtime = env.VIDEO_MODEL === "echomimic_realtime" ? new EchoMimicRealtimeClient() : null;
+    this.arachneFrames = new ArachneAvatarFramesClient();
     this.fps = input.fps ?? 25;
     this.latencyCompensationMs = input.latencyCompensationMs ?? 1200;
     this.minBufferSeconds = input.minBufferSeconds ?? 2.0;
@@ -104,17 +106,6 @@ export class AvatarRuntimeEngine {
       sessionId: input.sessionId,
       audioInRateHz: input.openAiAudioRateHz
     });
-
-    if (this.echoRealtime) {
-      await this.echoRealtime.connect({
-        meetingId: input.meetingId,
-        sessionId: input.sessionId,
-        refImagePath: env.LUNA_REF_IMAGE_PATH,
-        width: 512,
-        height: 512,
-        targetFps: this.fps
-      });
-    }
 
     // Subscribe to OpenAI orchestrator events.
     const unsubscribe = this.orchestrator.onEvent((meetingId, sessionId, event) => {
@@ -179,14 +170,6 @@ export class AvatarRuntimeEngine {
         sampleRateHz: input.sampleRateHz,
         pcm16: chunk.samples
       });
-      if (this.echoRealtime) {
-        this.echoRealtime.sendIngest({
-          timestampMs: chunk.startMs,
-          sampleRateHz: input.sampleRateHz,
-          pcm16Base64: Buffer.from(chunk.pcm16).toString("base64"),
-          a2f: this.facialFrameRef?.current ?? null
-        });
-      }
     }
     this.applyAudioQueueBudget();
 
@@ -207,7 +190,6 @@ export class AvatarRuntimeEngine {
     if (this.telemetryTimer) clearInterval(this.telemetryTimer);
     this.videoTickTimer = null;
     this.telemetryTimer = null;
-    this.echoRealtime?.stop();
     void this.publisher.close().catch(() => undefined);
   }
 
@@ -250,28 +232,7 @@ export class AvatarRuntimeEngine {
     if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
 
-    if (env.VIDEO_MODEL === "echomimic_realtime") {
-      const targetTime = this.orchestrator.getAudioClockMs(this.meetingId) ?? this.clock.nowMs();
-      const frame = this.echoRealtime?.peekLatestFrame();
-      if (frame) {
-        await this.publisher
-          .publishVideoFrameI420(frame.i420, frame.width, frame.height, targetTime)
-          .catch(() => undefined);
-        this.publishedFrames += 1;
-      } else if (env.AVATAR_VIDEO_DEGRADED_FALLBACK === "static") {
-        const width = 512;
-        const height = 512;
-        this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
-        await this.publisher
-          .publishVideoFrameI420(this.idleFallbackFrame(this.staticFallbackFrame.data, width, height), width, height, targetTime)
-          .catch(() => undefined);
-        this.publishedFrames += 1;
-        this.underrunCount += 1;
-      }
-      return;
-    }
-
-    if (env.VIDEO_MODEL === "behavior_static") {
+    if (resolveRuntimeVideoEngine() === "behavior_static") {
       const width = 512;
       const height = 512;
       this.staticFallbackFrame ??= createStaticI420Frame(width, height, 16);
@@ -284,7 +245,7 @@ export class AvatarRuntimeEngine {
       return;
     }
 
-    if (env.VIDEO_MODEL !== "echomimic") return;
+    if (!isArachneEngineEnabled()) return;
     const audioClock = this.orchestrator.getAudioClockMs(this.meetingId) ?? this.clock.nowMs();
     const targetTime = audioClock - this.latencyCompensationMs;
     const frame = this.clipBuffer.getFrameAtTime(targetTime);
@@ -311,9 +272,9 @@ export class AvatarRuntimeEngine {
     if (!this.running || !this.meetingId || !this.sessionId) return;
     if (this.paused || this.stoppedAtMs !== null) return;
     if (!env.AVATAR_VIDEO_ENABLED) return;
-    if (env.VIDEO_MODEL === "behavior_static" || env.VIDEO_MODEL === "echomimic_realtime") return;
-    if (!this.runpod.isConfigured()) return;
-    if (env.VIDEO_MODEL !== "echomimic") return;
+    if (resolveRuntimeVideoEngine() === "behavior_static") return;
+    if (!isArachneEngineEnabled()) return;
+    if (!this.arachneFrames.isConfigured()) return;
     if (this.inFlight >= this.maxInFlight) return;
     if (this.clock.nowMs() < this.nextGenerationAllowedAtMs) return;
 
@@ -324,14 +285,14 @@ export class AvatarRuntimeEngine {
     const epoch = this.clipBuffer.getEpoch();
     logger.info(
       {
-        event: "echomimic_clip_request_started",
+        event: "arachne_frame_request_started",
         meetingId: this.meetingId,
         sessionId: this.sessionId,
         epoch,
         bufferedSeconds: buffered,
         queueDepth: this.inFlight
       },
-      "echomimic_clip_request_started"
+      "arachne_frame_request_started"
     );
     const audioRate = (this.orchestrator.getAudioInRateHz(this.meetingId) ?? 24_000) as 16000 | 24000 | 48000;
     const windowDurationMs = 1000; // 1s clip window
@@ -345,7 +306,8 @@ export class AvatarRuntimeEngine {
       this.underrunCount += 1;
       pcm16 = this.zeroPcm16(windowDurationMs, audioRate);
     }
-    const pcm16Bytes = new Uint8Array(pcm16.buffer);
+    const pcm16ForArachne = audioRate === 16_000 ? pcm16 : resamplePcm16Linear(pcm16, audioRate, 16_000);
+    const pcm16Bytes = Buffer.from(pcm16ForArachne.buffer, pcm16ForArachne.byteOffset, pcm16ForArachne.byteLength);
     const b64 = base64FromBytes(pcm16Bytes);
 
     this.inFlight += 1;
@@ -360,22 +322,11 @@ export class AvatarRuntimeEngine {
     try {
       const result = await withRetries(
         () =>
-          this.runpod.generateClipBestEffort({
-            meetingId: this.meetingId as string,
-            sessionId: this.sessionId as string,
+          this.generateArachneClip({
             epoch,
             audioPcm16Base64: b64,
-            audioSampleRate: audioRate,
-            fps: 25,
-            width: 512,
-            height: 512,
-            numFrames: 25,
-            numInferenceSteps: 3,
-            seed: 44,
-            prompt: "A realistic HR avatar is speaking naturally to camera, stable face, realistic lipsync, professional upper body framing, centered face, cinematic lighting, sharp eyes.",
-            negativePrompt:
-              "blurry, distorted face, unstable eyes, warped mouth, bad teeth, face melting, duplicate face, watermark, text",
-            returnFrames: env.RUNPOD_WORKER_RETURN_FRAMES
+            windowStart,
+            windowDurationMs
           }),
         { attempts: 1, backoffMs: [0] }
       );
@@ -442,7 +393,7 @@ export class AvatarRuntimeEngine {
         sessionId: this.sessionId,
         actor: "gateway",
         payload: {
-          model: "echomimic",
+          model: "arachne",
           generationEpoch: epoch,
           clipLatencyMs: result.telemetry.clipLatencyMs,
           queueDepth: result.telemetry.queueDepth ?? this.inFlight,
@@ -452,6 +403,103 @@ export class AvatarRuntimeEngine {
       }).catch(() => undefined);
     } finally {
       this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+  }
+
+  private async generateArachneClip(input: {
+    epoch: number;
+    audioPcm16Base64: string;
+    windowStart: number;
+    windowDurationMs: number;
+  }): Promise<
+    | {
+        ok: true;
+        sessionId: string;
+        epoch: number;
+        fps: number;
+        width: number;
+        height: number;
+        frames: Array<{ ptsMs: number; i420Base64: string }>;
+        telemetry: { clipLatencyMs: number; queueDepth: number; gpuMemoryMb?: number };
+      }
+    | { ok: false; reason: string; workerStatus?: string; workerLatencyMs?: number }
+  > {
+    if (!this.sessionId) {
+      return { ok: false, reason: "session_missing" };
+    }
+    const imageBase64 = await this.getReferenceImageBase64();
+    if (!imageBase64) {
+      return { ok: false, reason: "reference_image_missing" };
+    }
+
+    const startedAt = this.clock.nowMs();
+    const frames: Array<{ ptsMs: number; i420Base64: string; width: number; height: number }> = [];
+    for await (const item of this.arachneFrames.streamFrames(
+      {
+        sessionId: this.sessionId,
+        imageBase64,
+        audioPcm16Base64: input.audioPcm16Base64,
+        prompt:
+          "A professional HR interviewer speaking naturally to camera, stable face, realistic lipsync, neutral office background.",
+        negativePrompt:
+          "blurry, distorted face, unstable eyes, warped mouth, bad teeth, face melting, duplicate face, watermark, text",
+        numFrames: 25,
+        numInferenceSteps: 8,
+        textGuidanceScale: 4.0,
+        audioGuidanceScale: 4.0,
+        resolution: "480p"
+      },
+      this.stopController?.signal
+    )) {
+      if (!item.ok) {
+        return { ok: false, reason: item.error };
+      }
+      frames.push({
+        ptsMs: item.frame.tsMs,
+        i420Base64: item.i420.toString("base64"),
+        width: item.frame.width,
+        height: item.frame.height
+      });
+    }
+
+    if (frames.length === 0) {
+      return { ok: false, reason: "worker_done_without_frames" };
+    }
+    const first = frames[0];
+    return {
+      ok: true,
+      sessionId: this.sessionId,
+      epoch: input.epoch,
+      fps: Math.max(1, Math.round((frames.length * 1000) / input.windowDurationMs)),
+      width: first.width,
+      height: first.height,
+      frames: frames.map((frame) => ({ ptsMs: frame.ptsMs, i420Base64: frame.i420Base64 })),
+      telemetry: {
+        clipLatencyMs: this.clock.nowMs() - startedAt,
+        queueDepth: this.inFlight
+      }
+    };
+  }
+
+  private async getReferenceImageBase64(): Promise<string | null> {
+    if (this.referenceImageBase64) return this.referenceImageBase64;
+    const url = env.AVATAR_REFERENCE_IMAGE_URL?.trim();
+    if (!url) return null;
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        signal: AbortSignal.timeout(Math.min(env.AVATAR_HTTP_TIMEOUT_MS, 10_000))
+      });
+      if (!response.ok) {
+        logger.warn({ status: response.status, url }, "avatar reference image fetch failed");
+        return null;
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      this.referenceImageBase64 = bytes.toString("base64");
+      return this.referenceImageBase64;
+    } catch (err) {
+      logger.warn({ err, url }, "avatar reference image fetch failed");
+      return null;
     }
   }
 
@@ -639,5 +687,10 @@ function readJawOpenFromFacialRef(frame: RuntimeFrameEnvelope | null | undefined
     }
   }
   return typeof frame.audioPower === "number" ? Math.max(0, Math.min(1, frame.audioPower * 2)) : 0;
+}
+
+function isArachneEngineEnabled(): boolean {
+  const engine = resolveRuntimeVideoEngine();
+  return engine === "arachne" || engine === "arachne_ultra_avatar" || engine === "arachne_ultra_video";
 }
 

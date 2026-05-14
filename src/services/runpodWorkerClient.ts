@@ -244,7 +244,7 @@ export class RunpodWorkerClient {
             height,
             frames: framesOut,
             telemetry: {
-              model: String((telemetry as any)?.model ?? "echomimic"),
+              model: String((telemetry as any)?.model ?? "arachne"),
               clipLatencyMs: Number((telemetry as any)?.clipLatencyMs ?? workerLatencyMs),
               queueDepth: Number((telemetry as any)?.queueDepth ?? 0),
               gpuMemoryMb: (telemetry as any)?.gpuMemoryMb ? Number((telemetry as any)?.gpuMemoryMb) : undefined,

@@ -72,11 +72,16 @@ const envSchema = z.object({
   OBSERVER_SESSION_TICKET_TTL_MS: z.coerce.number().int().positive().default(120_000),
   JOIN_TOKEN_FRONTEND_BASE_URL: z.string().url().default("http://localhost:3000"),
   JOIN_TOKEN_AUDIT_LIMIT: z.coerce.number().int().positive().default(100),
-  // Avatar service (RunPod H200 pod, see avatarservicenullxes)
+  // Avatar service (RunPod GPU pod / ARACHNE-X worker).
   AVATAR_ENABLED: envBoolean(false),
   AVATAR_POD_URL: z.string().url().optional(),
   AVATAR_SHARED_TOKEN: z.string().min(16).optional(),
   AVATAR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  AVATAR_FRAMES_PATH: z.string().min(1).default("/v1/realtime/avatar_frames"),
+  AVATAR_FRAMES_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  NULLXES_INFERENCE_SERVICE_KEY: z.string().min(1).optional(),
+  NULLXES_AVATAR_INFERENCE_SERVICE_KEY: z.string().min(1).optional(),
+  LONGCAT_INFERENCE_SERVICE_KEY: z.string().min(1).optional(),
   AVATAR_DEFAULT_KEY: z.string().min(1).default("anna"),
   AVATAR_DEFAULT_EMOTION: z.string().min(1).default("neutral"),
   AVATAR_REFERENCE_IMAGE_URL: z.string().url().optional(),
@@ -116,9 +121,10 @@ const envSchema = z.object({
   RUNPOD_WORKER_MAX_INFLIGHT: z.coerce.number().int().min(1).max(8).default(1),
   RUNPOD_WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   RUNPOD_WORKER_RETURN_FRAMES: envBoolean(true),
-  /** `behavior_static` — Stream agent publishes live I420 without EchoMimic worker (A2F-driven mouth modulation when enabled). */
-  /** `echomimic_realtime` — WebSocket to 8889 worker; PCM+A2F ingest, I420 frames to Stream (see docs/ECHOMIMIC-8889-REALTIME-WIRE.md). */
-  VIDEO_MODEL: z.enum(["wan", "echomimic", "none", "behavior_static", "echomimic_realtime"]).default("none"),
+  /** Canonical realtime avatar engine. `core` aliases are normalized to `arachne` when sent to the pod. */
+  VIDEO_ENGINE: z.enum(["none", "behavior_static", "arachne", "arachne_ultra_avatar", "arachne_ultra_video", "nullxes", "longcat", "core"]).default("none"),
+  /** Legacy env name kept for operators; production values are narrowed to ARACHNE/static/none. */
+  VIDEO_MODEL: z.enum(["none", "behavior_static", "arachne", "arachne_ultra_avatar", "arachne_ultra_video"]).default("none"),
   AVATAR_VIDEO_ENABLED: envBoolean(true),
   AVATAR_VIDEO_DEGRADED_FALLBACK: z.enum(["static", "none"]).default("static"),
   AVATAR_AUDIO_CHUNK_TARGET_MS: z.coerce.number().int().min(20).max(40).default(20),
@@ -139,10 +145,6 @@ const envSchema = z.object({
   A2F_RUNTIME_MAX_QUEUE_MS: z.coerce.number().int().min(80).max(2_000).default(200),
   /** External GPU batch avatar runtime (orchestration only; no inference in gateway). */
   RUNPOD_RUNTIME_URL: z.string().url().optional(),
-  /** EchoMimic 8889 realtime worker (WS + optional HTTP session). Required when VIDEO_MODEL=echomimic_realtime. */
-  RUNPOD_ECHOMIMIC_REALTIME_URL: z.string().url().optional(),
-  /** Optional Bearer token for 8889 realtime HTTP + WS hello. */
-  RUNPOD_ECHOMIMIC_REALTIME_BEARER: z.string().optional(),
   /** Default Luna reference path on the GPU filesystem (sent in hello / session). */
   LUNA_REF_IMAGE_PATH: z.string().min(1).default("/workspace/test_assets/luna.jpg"),
   RUNPOD_GENERATE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
@@ -235,11 +237,15 @@ const envSchema = z.object({
     });
   }
 
-  if (values.VIDEO_MODEL === "echomimic_realtime" && !values.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim()) {
+  const runtimeEngine = values.VIDEO_ENGINE !== "none" ? values.VIDEO_ENGINE : values.VIDEO_MODEL;
+  if (
+    ["arachne", "arachne_ultra_avatar", "arachne_ultra_video", "nullxes", "longcat", "core"].includes(runtimeEngine) &&
+    !values.AVATAR_POD_URL?.trim()
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ["RUNPOD_ECHOMIMIC_REALTIME_URL"],
-      message: "RUNPOD_ECHOMIMIC_REALTIME_URL is required when VIDEO_MODEL=echomimic_realtime"
+      path: ["AVATAR_POD_URL"],
+      message: "AVATAR_POD_URL is required when VIDEO_ENGINE=arachne"
     });
   }
 });
@@ -261,4 +267,36 @@ export function resolveGetstreamApiCredentials(): { apiKey: string | undefined; 
     apiKey: env.GETSTREAM_API_KEY ?? env.STREAM_API_KEY,
     apiSecret: env.GETSTREAM_SECRET ?? env.STREAM_API_SECRET
   };
+}
+
+export type RuntimeVideoEngine =
+  | "none"
+  | "behavior_static"
+  | "arachne"
+  | "arachne_ultra_avatar"
+  | "arachne_ultra_video";
+
+export function resolveRuntimeVideoEngine(): RuntimeVideoEngine {
+  const configured = env.VIDEO_ENGINE !== "none" ? env.VIDEO_ENGINE : env.VIDEO_MODEL;
+  if (configured === "behavior_static") return "behavior_static";
+  if (configured === "arachne_ultra_avatar" || configured === "arachne_ultra_video") return configured;
+  if (configured === "arachne" || configured === "nullxes" || configured === "longcat" || configured === "core") {
+    return "arachne";
+  }
+  return "none";
+}
+
+export function resolveArachnePodEngine(): "arachne" | "arachne_ultra_avatar" | "arachne_ultra_video" {
+  const engine = resolveRuntimeVideoEngine();
+  if (engine === "arachne_ultra_avatar" || engine === "arachne_ultra_video") return engine;
+  return "arachne";
+}
+
+export function resolveAvatarInferenceServiceKey(): string | undefined {
+  return (
+    env.NULLXES_INFERENCE_SERVICE_KEY?.trim() ||
+    env.NULLXES_AVATAR_INFERENCE_SERVICE_KEY?.trim() ||
+    env.LONGCAT_INFERENCE_SERVICE_KEY?.trim() ||
+    undefined
+  );
 }

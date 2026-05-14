@@ -26,7 +26,7 @@ export interface AvatarState {
   agentUserId?: string;
   phase: AvatarPhase;
   avatarReady: boolean;
-  videoModel?: "wan" | "ltx" | "echomimic";
+  videoModel?: "wan" | "ltx" | "arachne" | "arachne_ultra_avatar" | "arachne_ultra_video";
   clipLatencyMs?: number;
   bufferSeconds?: number;
   droppedFrames?: number;

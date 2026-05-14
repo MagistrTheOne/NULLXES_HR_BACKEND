@@ -2,7 +2,7 @@
 
 ## Pre-flight
 - Ensure gateway and pod use the same `REDIS_URL` and `REDIS_PREFIX`.
-- Verify `VIDEO_MODEL=echomimic` and `RUNPOD_WORKER_URL` are configured.
+- Verify `VIDEO_ENGINE=arachne`, `AVATAR_POD_URL`, and `AVATAR_FRAMES_PATH=/v1/realtime/avatar_frames` are configured.
 - Verify `STREAM_API_KEY/STREAM_API_SECRET` and avatar pod auth are valid.
 
 ## Runtime Checks

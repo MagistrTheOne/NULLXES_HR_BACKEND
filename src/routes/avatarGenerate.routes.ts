@@ -8,7 +8,7 @@ import { AvatarGenerateJobStore } from "../services/avatarGenerateJobStore";
 import { AvatarGenerateRunpodService, type UploadedGenerateFiles } from "../services/avatarGenerateRunpodService";
 import { startAvatarGenerateStaleSweeper } from "../services/avatarGenerateStaleJobSweeper";
 import type { MinimalRedisClient } from "../services/redisClient";
-import { probeEchoMimicRealtimeHealth } from "../services/echoMimicRealtimeClient";
+import { ArachneAvatarFramesClient } from "../services/arachneAvatarFramesClient";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -45,7 +45,7 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
     ttlMs: env.AVATAR_GENERATE_JOB_TTL_MS
   });
 
-  const runpodUrl = env.RUNPOD_RUNTIME_URL?.trim();
+  const runpodUrl = env.RUNPOD_RUNTIME_URL?.trim() || env.AVATAR_POD_URL?.trim();
   const runpodService = runpodUrl
     ? new AvatarGenerateRunpodService({
         jobStore,
@@ -58,6 +58,7 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
         heartbeatTtlMs: env.AVATAR_GENERATE_JOB_TTL_MS
       })
     : null;
+  const arachneFramesClient = new ArachneAvatarFramesClient();
 
   startAvatarGenerateStaleSweeper({
     jobStore,
@@ -81,15 +82,12 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
         runtimeLatencyMs = typeof probe.latencyMs === "number" && Number.isFinite(probe.latencyMs) ? probe.latencyMs : null;
       }
 
-      let echomimicRealtimeReachable = false;
-      let echomimicRealtimeLatencyMs: number | null = null;
-      const emRt = env.RUNPOD_ECHOMIMIC_REALTIME_URL?.trim();
-      if (emRt) {
-        const emProbe = await probeEchoMimicRealtimeHealth(emRt);
-        echomimicRealtimeReachable = emProbe.ok;
-        echomimicRealtimeLatencyMs =
-          typeof emProbe.latencyMs === "number" && Number.isFinite(emProbe.latencyMs) ? emProbe.latencyMs : null;
-      }
+      const arachneProbe = await arachneFramesClient.probeHealth();
+      const arachneWorkerReachable = arachneProbe.ok;
+      const arachneWorkerLatencyMs =
+        typeof arachneProbe.latencyMs === "number" && Number.isFinite(arachneProbe.latencyMs)
+          ? arachneProbe.latencyMs
+          : null;
 
       const lastSuccessfulGenerationAt = await readLastSuccessfulGenerationAt(deps.redis, env.REDIS_PREFIX);
 
@@ -98,8 +96,10 @@ export function createAvatarGenerateRouter(deps: { redis?: MinimalRedisClient })
         redisReachable: redisOk,
         streamConfigured,
         runtimeLatencyMs,
-        echomimicRealtimeReachable,
-        echomimicRealtimeLatencyMs,
+        arachneWorkerReachable,
+        arachneWorkerLatencyMs,
+        engine: arachneProbe.engine,
+        lastError: arachneProbe.lastError,
         lastSuccessfulGenerationAt
       });
     })

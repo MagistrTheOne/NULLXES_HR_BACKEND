@@ -9,7 +9,7 @@ Schema (`1.0`):
 - `meetingId: string`
 - `activeSpeaker: "candidate" | "assistant"`
 - `phase: "starting" | "in_meeting" | "paused" | "stopped" | "failed" | "degraded"`
-- `engine: "echomimic" | "echomimic_realtime" | "arachne" | "behavior_static" | "none"`
+- `engine: "arachne" | "arachne_ultra_avatar" | "arachne_ultra_video" | "behavior_static" | "none"`
 - `degradationLevel: 0 | 1 | 2 | 3 | 4`
 - `avatarReady: boolean`
 - `revision: number`
@@ -20,6 +20,12 @@ Schema (`1.0`):
 Write ownership:
 - Gateway writes all fields.
 - Pod updates heartbeat via runtime endpoint only.
+
+## ARACHNE Session / Frame Split
+
+- `POST {AVATAR_POD_URL}/sessions` remains a hybrid orchestration/session call. The gateway sends `engine: "arachne"` (or an explicit ARACHNE profile) plus OpenAI/Stream context.
+- Realtime neural frames come only from `POST {AVATAR_POD_URL}{AVATAR_FRAMES_PATH}` (default `/v1/realtime/avatar_frames`) with JSON `StreamFramesBody` and NDJSON response.
+- ARACHNE worker returns frames/MP4 only; gateway or the pod session layer owns Stream/LiveKit publishing.
 
 ## Canonical Runtime Events
 

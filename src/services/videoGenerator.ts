@@ -1,7 +1,7 @@
 import { env } from "../config/env";
 import type { RunpodWorkerClient, RunpodGenerateClipResponse } from "./runpodWorkerClient";
 
-export type VideoModel = "wan" | "echomimic" | "echomimic_realtime" | "none";
+export type VideoModel = "arachne" | "arachne_ultra_avatar" | "arachne_ultra_video" | "behavior_static" | "none";
 
 export type AudioWindow = {
   /** base64 PCM16 LE audio for this clip window (authoritative OpenAI clock). */
@@ -28,68 +28,12 @@ export interface VideoGenerator {
   unload(): Promise<void>;
 }
 
-export class EchoMimicGenerator implements VideoGenerator {
-  private readonly worker: RunpodWorkerClient;
-
-  constructor(worker: RunpodWorkerClient) {
-    this.worker = worker;
-  }
-
-  async warmup(): Promise<void> {
-    // Worker can implement its own warmup route; keep best-effort here.
-    return;
-  }
-
-  async generateClip(input: { meetingId: string; sessionId: string; window: AudioWindow; fps: number; numFrames: number; seed?: number }): Promise<GeneratedClip> {
-    const resp = await this.worker.generateClip({
-      meetingId: input.meetingId,
-      sessionId: input.sessionId,
-      epoch: 0,
-      audioPcm16Base64: input.window.pcm16Base64,
-      audioSampleRate: input.window.sampleRateHz,
-      fps: 25,
-      width: 512,
-      height: 512,
-      numFrames: (input.numFrames === 105 ? 105 : input.numFrames === 57 ? 57 : input.numFrames === 49 ? 49 : 25) as 25 | 49 | 57 | 105,
-      numInferenceSteps: 5,
-      seed: input.seed,
-      prompt: "A realistic HR avatar is speaking naturally to camera, stable face, realistic lipsync, professional upper body framing, centered face, cinematic lighting, sharp eyes.",
-      negativePrompt:
-        "blurry, distorted face, unstable eyes, warped mouth, bad teeth, face melting, duplicate face, watermark, text"
-    });
-    return {
-      model: "echomimic",
-      fps: resp.fps,
-      width: resp.width,
-      height: resp.height,
-      audioStartMs: input.window.audioStartMs,
-      durationMs: input.window.durationMs,
-      frames: resp.frames,
-      telemetry: resp.telemetry
-    };
-  }
-
-  async unload(): Promise<void> {
-    return;
-  }
-}
-
-export function createVideoGenerator(worker: RunpodWorkerClient): VideoGenerator {
+export function createVideoGenerator(_worker: RunpodWorkerClient): VideoGenerator {
   const model = env.VIDEO_MODEL as VideoModel;
-  if (model === "echomimic_realtime") {
-    return {
-      warmup: async () => undefined,
-      generateClip: async () => {
-        throw new Error("VIDEO_MODEL=echomimic_realtime uses WebSocket ingest, not generateClip");
-      },
-      unload: async () => undefined
-    } satisfies VideoGenerator;
-  }
-  if (model === "echomimic") return new EchoMimicGenerator(worker);
   return {
     warmup: async () => undefined,
     generateClip: async () => {
-      throw new Error(`VIDEO_MODEL=${model} does not support generateClip`);
+      throw new Error(`VIDEO_MODEL=${model} does not support legacy generateClip; use ARACHNE avatar_frames or /v1/arachne/generate`);
     },
     unload: async () => undefined
   } satisfies VideoGenerator;

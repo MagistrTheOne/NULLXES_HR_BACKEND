@@ -51,6 +51,20 @@ function extractRunpodResultPath(json: unknown): string | undefined {
   return first.trim();
 }
 
+function extractArachneJobId(json: unknown): string | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  const o = json as Record<string, unknown>;
+  for (const key of ["id", "jobId", "job_id"]) {
+    const value = o[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  const result = o.result;
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return extractArachneJobId(result);
+  }
+  return undefined;
+}
+
 function resolvePublicVideoUrl(runpodBaseUrl: string, json: unknown): { videoUrl?: string; error?: string } {
   const fromArray = extractRunpodResultPath(json);
   if (fromArray) {
@@ -130,7 +144,7 @@ export class AvatarGenerateRunpodService {
 
   private async runJob(jobId: string, files: UploadedGenerateFiles): Promise<void> {
     const base = normalizeRunpodBase(this.deps.runpodBaseUrl);
-    const target = `${base}/generate`;
+    const target = `${base}/v1/arachne/generate`;
     const [backoff1, backoff2] = this.deps.retryBackoffMs;
 
     const patch = async (partial: Partial<AvatarGenerateJobRecord>): Promise<void> => {
@@ -197,20 +211,23 @@ export class AvatarGenerateRunpodService {
       const perRequestMs = Math.min(this.deps.generateTimeoutMs, remaining);
 
       try {
-        const form = new FormData();
-        const imageBlob = new Blob([new Uint8Array(files.image.buffer)], {
-          type: files.image.mimetype || "application/octet-stream"
-        });
-        const audioBlob = new Blob([new Uint8Array(files.audio.buffer)], {
-          type: files.audio.mimetype || "application/octet-stream"
-        });
-        form.append("image", imageBlob, files.image.originalname || "image");
-        form.append("audio", audioBlob, files.audio.originalname || "audio");
-        form.append("prompt", files.prompt);
-
         const response = await fetch(target, {
           method: "POST",
-          body: form,
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            task: "audio-image-to-video",
+            sessionId: jobId,
+            prompt: files.prompt,
+            imageBase64: files.image.buffer.toString("base64"),
+            audioBase64: files.audio.buffer.toString("base64"),
+            resolution: "480p",
+            numFrames: 93,
+            numInferenceSteps: 8,
+            textGuidanceScale: 4.0,
+            audioGuidanceScale: 4.0
+          }),
           signal: AbortSignal.timeout(perRequestMs)
         });
 
@@ -253,12 +270,14 @@ export class AvatarGenerateRunpodService {
           return;
         }
 
-        const resolved = resolvePublicVideoUrl(base, json);
+        const workerJobId = extractArachneJobId(json);
+        const finalJson = workerJobId ? await this.pollArachneResult(base, workerJobId, wallDeadline) : json;
+        const resolved = resolvePublicVideoUrl(base, finalJson);
         if (!resolved.videoUrl) {
           await patch({
             state: "failed",
             failedAt: isoNow(),
-            errorMessage: resolved.error ?? "could not build video URL from RunPod response",
+            errorMessage: resolved.error ?? "could not build video URL from ARACHNE response",
             retryCount: attempt
           });
           return;
@@ -269,7 +288,7 @@ export class AvatarGenerateRunpodService {
           state: "hydrating",
           videoUrl: resolved.videoUrl,
           resultVideoUrl: resolved.videoUrl,
-          resultPayload: json,
+          resultPayload: finalJson,
           retryCount: attempt
         });
         await patch({
@@ -277,7 +296,7 @@ export class AvatarGenerateRunpodService {
           completedAt: doneAt,
           videoUrl: resolved.videoUrl,
           resultVideoUrl: resolved.videoUrl,
-          resultPayload: json,
+          resultPayload: finalJson,
           retryCount: attempt
         });
         await recordAvatarGenerateSuccess(this.deps.redis, this.deps.redisPrefix, this.deps.heartbeatTtlMs);
@@ -300,8 +319,7 @@ export class AvatarGenerateRunpodService {
 
   async probeHealth(): Promise<{ ok: boolean; status?: number; detail?: string; latencyMs?: number }> {
     const base = normalizeRunpodBase(this.deps.runpodBaseUrl);
-    /** RunPod / external GPU often exposes `GET /warmup` with `{ status, gpu, latencyMs }`. */
-    const candidates = [`${base}/warmup`, `${base}/health`, `${base}/`];
+    const candidates = [`${base}/health`, `${base}/warmup`, `${base}/`];
     let lastLatencyMs: number | undefined;
     let lastHttpDetail = "";
 
@@ -358,6 +376,43 @@ export class AvatarGenerateRunpodService {
       }
     }
     return { ok: false, detail: "unreachable", latencyMs: lastLatencyMs };
+  }
+
+  private async pollArachneResult(base: string, workerJobId: string, wallDeadlineMs: number): Promise<unknown> {
+    let lastJson: unknown = { jobId: workerJobId };
+    while (Date.now() < wallDeadlineMs) {
+      const statusRes = await fetch(`${base}/v1/infer/jobs/${encodeURIComponent(workerJobId)}`, {
+        method: "GET",
+        signal: AbortSignal.timeout(10_000)
+      });
+      const statusText = await statusRes.text().catch(() => "");
+      try {
+        lastJson = statusText ? JSON.parse(statusText) : {};
+      } catch {
+        lastJson = { raw: statusText };
+      }
+      if (!statusRes.ok) {
+        throw new Error(`ARACHNE job poll HTTP ${statusRes.status}: ${statusText.slice(0, 300)}`);
+      }
+      const status = typeof lastJson === "object" && lastJson ? (lastJson as Record<string, unknown>).status : undefined;
+      if (status === "failed" || status === "error") {
+        throw new Error(`ARACHNE job failed: ${statusText.slice(0, 300)}`);
+      }
+      if (status === "completed" || status === "succeeded" || status === "done") {
+        const resultRes = await fetch(`${base}/v1/infer/jobs/${encodeURIComponent(workerJobId)}/result`, {
+          method: "GET",
+          signal: AbortSignal.timeout(30_000)
+        });
+        const resultText = await resultRes.text().catch(() => "");
+        try {
+          return resultText ? JSON.parse(resultText) : {};
+        } catch {
+          return { raw: resultText };
+        }
+      }
+      await sleep(this.deps.retryBackoffMs[0]);
+    }
+    return lastJson;
   }
 }
 

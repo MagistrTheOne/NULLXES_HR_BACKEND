@@ -5,8 +5,9 @@
 - [ ] `npm run build`
 
 ## Runtime Preconditions
-- [ ] `VIDEO_MODEL=echomimic`
-- [ ] `RUNPOD_WORKER_URL` configured
+- [ ] `VIDEO_ENGINE=arachne`
+- [ ] `AVATAR_POD_URL` configured
+- [ ] `AVATAR_FRAMES_PATH=/v1/realtime/avatar_frames`
 - [ ] `STREAM_API_KEY` and `STREAM_API_SECRET` configured
 
 ## Runtime Smoke

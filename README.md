@@ -243,31 +243,19 @@ Webhook queue stats:
 curl -i "http://localhost:8080/ops/webhooks"
 ```
 
-## HR Stream agent (Phase 5 — без EchoMimic worker)
+## HR Stream agent (ARACHNE-X)
 
 Чтобы в Stream появился участник `agent_<sessionId>` с **video+audio** (и HR-плитка перестала показывать `agentFound: false`), на gateway нужны ключи Stream и включённый аватар-пайплайн:
 
 - `AVATAR_ENABLED=1`
 - `AVATAR_VIDEO_ENABLED=1`
-- `VIDEO_MODEL=behavior_static` — публикует I420 через [`StreamAgentPublisher`](./src/services/streamAgentPublisher.ts) без RunPod EchoMimic; при `A2F_RUNTIME_ENABLED` рот модулируется по последнему кадру A2F.
+- `VIDEO_ENGINE=arachne` — gateway берёт PCM16 16 kHz, вызывает `POST {AVATAR_POD_URL}{AVATAR_FRAMES_PATH}` (`/v1/realtime/avatar_frames`) и публикует NDJSON-кадры в Stream через [`StreamAgentPublisher`](./src/services/streamAgentPublisher.ts).
+- `VIDEO_ENGINE=behavior_static` — CPU fallback без GPU inference; при `A2F_RUNTIME_ENABLED` рот модулируется по последнему кадру A2F.
+- `AVATAR_POD_URL`, `AVATAR_FRAMES_PATH=/v1/realtime/avatar_frames`
+- один из `NULLXES_INFERENCE_SERVICE_KEY`, `NULLXES_AVATAR_INFERENCE_SERVICE_KEY`, `LONGCAT_INFERENCE_SERVICE_KEY`, если pod требует `x-nullxes-avatar-inference-key`
 - `STREAM_API_KEY`, `STREAM_API_SECRET`
 
-Полный cinematic путь по-прежнему: `VIDEO_MODEL=echomimic` + `RUNPOD_WORKER_URL` и т.д.
-
-## Phase 5A — EchoMimic realtime (8889) + Luna
-
-Низколатентный нейро-рендер: gateway открывает WebSocket на воркер **8889**, шлёт `ingest` (PCM16 + опционально A2F), получает `frame` (I420) и публикует в Stream. Контракт: [`docs/ECHOMIMIC-8889-REALTIME-WIRE.md`](./docs/ECHOMIMIC-8889-REALTIME-WIRE.md).
-
-**Env (gateway / DigitalOcean `systemd` drop-in или `.env`):**
-
-| Переменная | Назначение |
-|------------|------------|
-| `VIDEO_MODEL=echomimic_realtime` | Включить realtime-пайплайн |
-| `RUNPOD_ECHOMIMIC_REALTIME_URL` | База `https://…-8889.proxy.runpod.net` |
-| `RUNPOD_ECHOMIMIC_REALTIME_BEARER` | Опционально: Bearer для HTTP/WS |
-| `LUNA_REF_IMAGE_PATH` | Путь ref на GPU (default `/workspace/test_assets/luna.jpg`) |
-| `STREAM_API_KEY`, `STREAM_API_SECRET` | Как для `behavior_static` |
-| `A2F_GPU_RUNTIME_WS_URL` + `A2F_RUNTIME_TRANSPORT=gpu_pod` | Опционально: мультиплекс A2F в ingest |
+MP4/offline путь использует тот же ARACHNE pod: `POST /v1/arachne/generate` и poll `/v1/infer/jobs/{id}`.
 
 **Smoke на дроплете:**
 
@@ -275,7 +263,7 @@ curl -i "http://localhost:8080/ops/webhooks"
 curl -sS http://127.0.0.1:8080/avatar/health
 ```
 
-В JSON смотрите `echomimicRealtimeReachable` и `echomimicRealtimeLatencyMs` (проба `/realtime/v1/health` или `/health` на 8889).
+В JSON смотрите `arachneWorkerReachable`, `arachneWorkerLatencyMs`, `engine`, `lastError`.
 
 ## Docker
 
